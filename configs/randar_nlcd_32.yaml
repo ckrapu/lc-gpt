@@ -1,0 +1,75 @@
+ar_model:
+  target: RandAR.model.randar_gpt.RandARTransformer
+  params:
+    n_layer: 16
+    n_head: 16
+    dim: 256
+    model_type: c2i
+    vocab_size: 16    # 16 unique NLCD values
+    block_size: 1024 # 32 x 32 = 1024
+    num_classes: 1    # Single dummy class for now
+    cls_token_num: 1
+    resid_dropout_p: 0.1
+    ffn_dropout_p: 0.1
+    drop_path_rate: 0.0
+    token_dropout_p: 0.0
+    position_order: random
+    grad_checkpointing: False
+    zero_class_qk: True
+    num_inference_steps: 32  # For parallel decoding
+
+dataset:
+  target: RandAR.dataset.nlcd_dataset.NLCDDataset
+  params:
+    data_path: "data/data_32.npz"
+    split: train
+    max_samples: 1000000
+tokenizer:
+  target: RandAR.model.nlcd_tokenizer.NLCDTokenizer
+  params:
+    vocab_size: 16
+
+accelerator:
+  gradient_accumulation_steps: 1  # No accumulation needed with large batch
+  mixed_precision: "bf16"  # Better numerical stability for H100
+  log_with: wandb
+
+optimizer:
+  lr: 0.0005  # Scaled 4x with batch size increase (was 0.008 for 1024)
+  weight_decay: 0.01
+  beta1: 0.9
+  beta2: 0.95
+  max_grad_norm: 1.0  # Re-enabled for stability
+  skip_grad_iter: 0
+  skip_grad_norm: 1000
+
+lr_scheduler:
+  type: cosine
+  warm_up_iters: 1000  # Increased for larger batch size
+  min_lr_ratio: 0.1
+  num_cycles: 0.5
+
+# training related parameters
+exp_name: "randar_nlcd_32"
+max_iters: 100000
+global_batch_size: 64
+ema: False
+ema_decay: 0.9999
+
+num_workers: 16  # 4x increase to leverage Grace CPU
+log_every: 50
+ckpt_every: 2000
+visualize_every: 500
+keep_last_k: 2
+resume_from: "results/randar_nlcd_32/checkpoints/iter_2000"
+global_seed: 42
+
+results_dir: "results/" 
+gpt_ckpt: None
+
+# for eval fid:
+vq_ckpt: None  # Not needed
+
+# for wandb
+wandb_entity: "RandAR"
+wandb_offline: True  # Run offline for testing 
