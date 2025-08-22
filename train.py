@@ -99,8 +99,8 @@ def main(args):
     model = instantiate_from_config(config.ar_model).to(accelerator.device)
     logger.info(f"Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Create tokenizer with value mapping
-    tokenizer = instantiate_from_config(config.tokenizer).to(accelerator.device).eval()
+    # Create tokenizer with value mapping (keep on CPU, not distributed)
+    tokenizer = instantiate_from_config(config.tokenizer).eval()
     tokenizer.idx_to_value = value_mapping  # Pass the mapping to tokenizer
     tokenizer.value_to_idx = {v: k for k, v in value_mapping.items()}
     for param in tokenizer.parameters():
@@ -232,10 +232,10 @@ def main(args):
                     pred_indices = torch.argmax(logits[:vis_num], dim=-1)
                     orig_token_order = torch.argsort(token_order[:vis_num])
                     pred_indices_ordered = torch.gather(pred_indices, 1, orig_token_order)
-                    pred_imgs = tokenizer.decode_codes_to_img(pred_indices_ordered, decode_table=dataset.decode_table)
+                    pred_imgs = tokenizer.decode_codes_to_img(pred_indices_ordered.detach().cpu(), decode_table=dataset.decode_table)
 
                     # Ground truth
-                    gt_imgs = tokenizer.decode_codes_to_img(image_tokens[:vis_num], decode_table=dataset.decode_table)
+                    gt_imgs = tokenizer.decode_codes_to_img(image_tokens[:vis_num].detach().cpu(), decode_table=dataset.decode_table)
                         
                     # Generation
                     # Handle both single and multi-GPU cases
@@ -261,7 +261,7 @@ def main(args):
                             top_p=1.0,
                         )
                         model.remove_caches()
-                    gen_imgs = tokenizer.decode_codes_to_img(gen_indices, decode_table=dataset.decode_table)
+                    gen_imgs = tokenizer.decode_codes_to_img(gen_indices.detach().cpu() if isinstance(gen_indices, torch.Tensor) else gen_indices, decode_table=dataset.decode_table)
 
                     # Save visualizations
                     vis_dir = os.path.join(experiment_dir, "visualizations")
