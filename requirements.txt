@@ -19,7 +19,7 @@ requests==2.32.3
 SciencePlots==2.1.1
 scipy==1.14.1
 scikit-learn==1.5.1
-shapely==1.7.1
+shapely
 torch==2.4.1
 torchvision==0.19.1
 torchaudio>=2.0.0
