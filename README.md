@@ -98,20 +98,7 @@ python scripts/sample-chain.py \
 
 ## Operational notes:
 
-#### Moving data to and from `s3` for training
-```
-source .env && aws s3 cp data/data_32.npz s3://lc-inpaint/
-```
-
-```
-source .env && aws s3 cp s3://lc-inpaint/data_32.npz data/
-```
-
 #### Syncing entire directory with exclusions
 ```
-source .env && aws s3 cp . s3://lc-inpaint/lc-gpt/ --recursive --exclude "venv/*" --exclude ".git/*" --exclude "__pycache__/*" --exclude "*.pyc"
-```
-
-```
-source .env && aws s3 cp s3://lc-inpaint/lc-gpt/ . --recursive --exclude "venv/*" --exclude ".git/*" --exclude "__pycache__/*"
+source .env && aws s3 cp . s3://lc-inpaint/lc-gpt/ --recursive --exclude ".*" --exclude "*/.*" --exclude "venv/*" --exclude "__pycache__/*" --exclude "*.pyc" --exclude "*.img" --exclude "*.tif" --exclude "*.zip" --exclude "*.ige" --exclude "*/wandb/*" --exclude "old/*" --exclude "/checkpoints/*"
 ```

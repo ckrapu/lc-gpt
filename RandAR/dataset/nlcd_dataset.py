@@ -1,9 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 import numpy as np
-import os
-import boto3
-from botocore.exceptions import NoCredentialsError, ClientError
+
 
 
 class NLCDDataset(Dataset):
@@ -24,10 +22,10 @@ class NLCDDataset(Dataset):
         data = np.load(data_path)
         
         if split == 'train':
-            self.data = data['train_data'][:, 0, :, :]  # First channel only
+            self.data = data['train_data_tokenized']
             self.coords = data['train_coords'] if 'train_coords' in data else None
         else:
-            self.data = data['test_data'][:, 0, :, :]  # First channel only
+            self.data = data['test_data_tokenized']
             self.coords = data['test_coords'] if 'test_coords' in data else None
         
         # Limit samples if requested
@@ -40,8 +38,10 @@ class NLCDDataset(Dataset):
         self.unique_values = np.unique(self.data)
         self.value_to_idx = {val: idx for idx, val in enumerate(self.unique_values)}
         self.idx_to_value = {idx: val for val, idx in self.value_to_idx.items()}
-        self.vocab_size = len(self.unique_values)
-        
+        self.vocab_size = len(data['decode_table'])
+        self.decode_table = data.get("decode_table")
+        self.image_shape = data['train_data'].shape[-2], data['train_data'].shape[-1]
+
         print(f"Loaded {split} split with {len(self.data)} samples")
         print(f"Data shape: {self.data.shape}")
         print(f"Unique values: {self.unique_values}")
@@ -51,17 +51,8 @@ class NLCDDataset(Dataset):
         return len(self.data)
     
     def __getitem__(self, idx):
-        # Get the HxW image
-        img = self.data[idx]
-        
-        # Convert to token indices
-        tokens = torch.zeros_like(torch.from_numpy(img), dtype=torch.long)
-        for val, token_idx in self.value_to_idx.items():
-            tokens[img == val] = token_idx
-        
-        # Flatten 
-        tokens = tokens.flatten()
-        
+        tokens = torch.from_numpy(self.data[idx]).flatten()  
+
         # Dummy class label (we could use coords or other metadata later)
         label = torch.tensor(0, dtype=torch.long)
         

@@ -18,7 +18,6 @@ from accelerate.utils import set_seed
 from accelerate import Accelerator, DistributedDataParallelKwargs
 import logging
 from dotenv import load_dotenv
-
 # Load environment variables from .env file
 load_dotenv(dotenv_path="../.env")
 
@@ -26,6 +25,7 @@ from RandAR.utils import instantiate_from_config
 from RandAR.utils.visualization import make_grid
 from RandAR.utils.lr_scheduler import get_scheduler
 
+TOKENIZE = True
 
 def cycle(dl: torch.utils.data.DataLoader):
     while True:
@@ -232,11 +232,11 @@ def main(args):
                     pred_indices = torch.argmax(logits[:vis_num], dim=-1)
                     orig_token_order = torch.argsort(token_order[:vis_num])
                     pred_indices_ordered = torch.gather(pred_indices, 1, orig_token_order)
-                    pred_imgs = tokenizer.decode_codes_to_img(pred_indices_ordered, 64)
-                    
+                    pred_imgs = tokenizer.decode_codes_to_img(pred_indices_ordered, decode_table=dataset.decode_table)
+
                     # Ground truth
-                    gt_imgs = tokenizer.decode_codes_to_img(image_tokens[:vis_num], 64)
-                    
+                    gt_imgs = tokenizer.decode_codes_to_img(image_tokens[:vis_num], decode_table=dataset.decode_table)
+                        
                     # Generation
                     # Handle both single and multi-GPU cases
                     if hasattr(model, 'module'):
@@ -261,8 +261,8 @@ def main(args):
                             top_p=1.0,
                         )
                         model.remove_caches()
-                    gen_imgs = tokenizer.decode_codes_to_img(gen_indices, 64)
-                    
+                    gen_imgs = tokenizer.decode_codes_to_img(gen_indices, decode_table=dataset.decode_table)
+
                     # Save visualizations
                     vis_dir = os.path.join(experiment_dir, "visualizations")
                     os.makedirs(vis_dir, exist_ok=True)

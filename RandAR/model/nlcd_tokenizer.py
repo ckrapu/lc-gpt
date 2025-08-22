@@ -1,12 +1,17 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import logging
+
+from typing import Union
+
+logger = logging.getLogger(__name__)
 
 
 class NLCDTokenizer(nn.Module):
     """Tokenizer for NLCD dataset - handles mapping between indices and NLCD values."""
     
-    def __init__(self, vocab_size=None, value_mapping=None):
+    def __init__(self, vocab_size=None, value_mapping=None,):
         super().__init__()
         self.vocab_size = vocab_size
         self.codebook_embed_dim = 1  # Dummy value for compatibility
@@ -43,7 +48,11 @@ class NLCDTokenizer(nn.Module):
             90: (0.729, 0.847, 0.918),
             95: (0.439, 0.639, 0.729),  
         }
-        
+
+        self.lut_arr = np.zeros((100, 3))
+        for code, rgb in self.lut.items():
+            self.lut_arr[code] = rgb
+
         # Create mapping from data values to LUT keys
         # Data values 1-16 map to NLCD classes (for visualization)
         lut_keys = list(self.lut.keys())
@@ -77,48 +86,54 @@ class NLCDTokenizer(nn.Module):
 
     
     
-    def encode_indices(self, x):
+    def encode_indices(self, x: np.ndarray):
+        
         # For NLCD dataset, tokens are already indices
         return x.flatten()
-    
-    def decode_codes_to_img(self, codes, image_size):
-        """Convert token codes back to images for visualization using NLCD colormap."""
+
+    def decode_codes_to_img(self, codes:Union[np.ndarray, torch.Tensor], decode_table: np.ndarray, scale: int = 10) -> np.ndarray:
+        """
+        Convert token codes back to images for visualization using NLCD colormap. Assumes that `codes`
+        is passed as an array of size (batch_size, seq_len) and that the values may need to be remapped
+        from tokens back into pixel space, with the mapped patches of pixels larger than the original tokens in terms
+        of shape, i.e. a token of shape (1, ) corresponds to a patch of shape (2, 2). 
+
+        Assumes that the "lookup_table" is an array with row indexes corresponding to tokens
+        and other dims corresponding to the raw values. The final image shape is required so we
+        know how much space each token is supposed to take in pixel space. Also, assumes square patches. Typically
+        of shape (65000, 2, 2) for a moderately sized codebook.   
+        """
+
+        if isinstance(codes, torch.Tensor):
+            codes = codes.detach().cpu().numpy()
+
         batch_size = codes.shape[0]
-        side_len = int(np.sqrt(codes.shape[1]))
-        
-        # Reshape to 2D
-        imgs = codes.reshape(batch_size, side_len, side_len)
-        
-        # Map indices back to NLCD values
-        imgs_values = torch.zeros_like(imgs)
-        for idx, value in self.idx_to_value.items():
-            imgs_values[imgs == idx] = value
-        
-        # Create RGB images using the NLCD colormap
-        imgs_rgb = np.zeros((batch_size, side_len, side_len, 3), dtype=np.uint8)
-        
+        patch_shape = decode_table.shape[1:]
+
+
+        shape_before_map = int(np.sqrt(codes.shape[1])), int(np.sqrt(codes.shape[1]))
+        shape_after_map = (shape_before_map[0]*patch_shape[0], shape_before_map[1]*patch_shape[1])
+
+        imgs_rgb = np.zeros((batch_size, *shape_after_map, 3), dtype=np.uint8)
+
         for b in range(batch_size):
-            for i in range(side_len):
-                for j in range(side_len):
-                    data_value = imgs_values[b, i, j].item()
-                    # Convert indices (0-15) to NLCD values (1-16) for colormap lookup
-                    nlcd_value = data_value + 1 if data_value > 0 else 0
-                    if nlcd_value in self.data_to_lut:
-                        lut_key = self.data_to_lut[nlcd_value]
-                        rgb = self.lut[lut_key]
-                        imgs_rgb[b, i, j] = [int(r * 255) for r in rgb]
-                    else:
-                        # Default to black for unknown values
-                        imgs_rgb[b, i, j] = [0, 0, 0]
+            decoded_values = decode_table[codes[b]]  # (seq_len, patch_h, patch_w)
+            
+            for patch_idx in range(codes.shape[1]):
+                patch_row = patch_idx // shape_before_map[1]
+                patch_col = patch_idx % shape_before_map[1]
+                
+                start_row = patch_row * patch_shape[0]
+                start_col = patch_col * patch_shape[1]
+                
+                patch = decoded_values[patch_idx]
+                for i in range(patch_shape[0]):
+                    for j in range(patch_shape[1]):
+                        nlcd_value = int(patch[i, j])
+                        rgb = self.lut_arr[nlcd_value]
+                        imgs_rgb[b, start_row + i, start_col + j] = (rgb * 255).astype(np.uint8)
         
-        # Resize if needed
-        if side_len != image_size:
-            from PIL import Image
-            resized_imgs = []
-            for img in imgs_rgb:
-                pil_img = Image.fromarray(img)
-                pil_img = pil_img.resize((image_size, image_size), Image.NEAREST)
-                resized_imgs.append(np.array(pil_img))
-            imgs_rgb = np.stack(resized_imgs)
+        # Upscale using nearest neighbor
+        upscaled = np.repeat(np.repeat(imgs_rgb, scale, axis=1), scale, axis=2)
         
-        return imgs_rgb 
+        return upscaled 
