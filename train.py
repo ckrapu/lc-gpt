@@ -99,12 +99,10 @@ def main(args):
     model = instantiate_from_config(config.ar_model).to(accelerator.device)
     logger.info(f"Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Create tokenizer with value mapping (keep on CPU, not distributed)
-    tokenizer = instantiate_from_config(config.tokenizer).eval()
+    # Create tokenizer with value mapping (not an nn.Module, so no parameters)
+    tokenizer = instantiate_from_config(config.tokenizer)
     tokenizer.idx_to_value = value_mapping  # Pass the mapping to tokenizer
     tokenizer.value_to_idx = {v: k for k, v in value_mapping.items()}
-    for param in tokenizer.parameters():
-        param.requires_grad = False
 
     # Create optimizer and scheduler
     optimizer = model.configure_optimizer(**config.optimizer)

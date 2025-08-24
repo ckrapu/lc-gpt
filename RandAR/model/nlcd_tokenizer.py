@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import numpy as np
 import logging
 
@@ -8,11 +7,10 @@ from typing import Union
 logger = logging.getLogger(__name__)
 
 
-class NLCDTokenizer(nn.Module):
+class NLCDTokenizer:
     """Tokenizer for NLCD dataset - handles mapping between indices and NLCD values."""
     
     def __init__(self, vocab_size=None, value_mapping=None,):
-        super().__init__()
         self.vocab_size = vocab_size
         self.codebook_embed_dim = 1  # Dummy value for compatibility
         
@@ -60,7 +58,7 @@ class NLCDTokenizer(nn.Module):
         for i in range(len(lut_keys)):
             self.data_to_lut[i] = lut_keys[i]
         
-    def forward(self, x):
+    def __call__(self, x):
         # Pass-through for compatibility
         return x, 0.0
     
