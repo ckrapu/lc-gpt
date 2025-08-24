@@ -107,11 +107,13 @@ source .env && aws s3 cp data/data_32.npz s3://lc-inpaint/
 source .env && aws s3 cp s3://lc-inpaint/data_32.npz data/
 ```
 
-#### Syncing entire directory with exclusions
-```
-source .env && aws s3 cp . s3://lc-inpaint/lc-gpt/ --recursive --exclude "venv/*" --exclude ".git/*" --exclude "__pycache__/*" --exclude "*.pyc"
-```
+#### Syncing `npz` data files for training`
 
 ```
-source .env && aws s3 cp s3://lc-inpaint/lc-gpt/ . --recursive --exclude "venv/*" --exclude ".git/*" --exclude "__pycache__/*"
+source .env && aws s3 cp . s3://lc-inpaint/lc-gpt/ --recursive --exclude "*" --include "data/*.npz"
+```
+
+#### Downloading only npz files from S3
+```
+source .env && aws s3 sync s3://lc-inpaint/lc-gpt/ . --exclude "*" --include "data/*.npz"
 ```
