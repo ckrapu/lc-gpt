@@ -5,9 +5,9 @@ ar_model:
     n_head: 8         
     dim: 256          
     model_type: c2i
-    vocab_size: 35173 
+    vocab_size: 43019 
     block_size: 256    
-    num_classes: 1    # Single dummy class for now
+    num_classes: 3    # Single dummy class for now
     cls_token_num: 1
     resid_dropout_p: 0.1
     ffn_dropout_p: 0.1
@@ -21,13 +21,13 @@ ar_model:
 dataset:
   target: RandAR.dataset.nlcd_dataset.NLCDDataset
   params:
-    data_path: "data/data_size32_ratio8.npz"
+    data_path: "data/combined_multi_res.npz"
     split: train
     max_samples: 1000000
 tokenizer:
   target: RandAR.model.nlcd_tokenizer.NLCDTokenizer
   params:
-    vocab_size: 35173
+    vocab_size: 43019
 
 accelerator:
   gradient_accumulation_steps: 1
@@ -50,9 +50,9 @@ lr_scheduler:
   num_cycles: 0.5
 
 # training related parameters
-exp_name: "randar_nlcd_64_tokenized"
+exp_name: "randar_nlcd_64_multires"
 max_iters: 100000  
-global_batch_size: 64
+global_batch_size: 8
 ema: False
 ema_decay: 0.9999
 
@@ -62,7 +62,7 @@ ckpt_every: 5000
 visualize_every: 1000
 eval_pplx_every: 5000
 keep_last_k: 2
-resume_from: "results/randar_nlcd_64_tokenized/checkpoints/iter_18000"
+resume_from: "results/randar_nlcd_64_multires/checkpoints/iter_18000"
 global_seed: 42
 
 results_dir: "results/" 

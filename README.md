@@ -102,3 +102,8 @@ python scripts/sample-chain.py \
 ```
 source .env && aws s3 cp . s3://lc-inpaint/lc-gpt/ --recursive --exclude ".*" --exclude "*/.*" --exclude "venv/*" --exclude "__pycache__/*" --exclude "*.pyc" --exclude "*.img" --exclude "*.tif" --exclude "*.zip" --exclude "*.ige" --exclude "*/wandb/*" --exclude "old/*" --exclude "/checkpoints/*"
 ```
+
+#### Running multiple-resolution dataset creation
+```
+cd scripts; nohup sh prep-multi-res-datasets.sh > ../logs/multires-data-prep-08-25-2025.log &
+```
