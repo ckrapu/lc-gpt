@@ -60,6 +60,7 @@ num_workers: 4
 log_every: 100
 ckpt_every: 5000
 visualize_every: 1000
+eval_pplx_every: 5000
 keep_last_k: 2
 resume_from: "results/randar_nlcd_64_tokenized/checkpoints/iter_18000"
 global_seed: 42
