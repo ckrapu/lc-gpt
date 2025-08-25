@@ -526,7 +526,7 @@ class RandARTransformer(nn.Module):
         else:
             assert token_order.shape == (bs, self.block_size)
         
-        result_indices = torch.zeros((bs, self.block_size), dtype=torch.long, device=cond.device)
+        result_indices = torch.zeros((bs, self.block_size), dtype=torch.long, device=cond.device) - 1
         
         # Step-2: Prepare the freqs_cis and position_instruction_tokens
         position_instruction_tokens = self.get_position_instruction_tokens(token_order)
@@ -568,7 +568,7 @@ class RandARTransformer(nn.Module):
         input_pos = torch.arange(0, x.shape[1], device=cond.device)
 
         # Step 5-2: Start the loop
-        while query_token_idx_cur_step < self.block_size - num_query_token_cur_step and query_token_idx_cur_step < self.block_size - 1:
+        while query_token_idx_cur_step < self.block_size:
             # Step 5-3: Decode the current step tokens
             logits = self.forward_inference(x, cur_freqs_cis, input_pos)
 
@@ -596,6 +596,11 @@ class RandARTransformer(nn.Module):
             num_query_token_next_step = calculate_num_query_tokens_for_parallel_decoding(
                 cur_inference_step, num_inference_steps, self.block_size, 
                 query_token_idx_cur_step, num_query_token_cur_step)
+            
+            # Ensure we generate all remaining tokens
+            remaining_tokens = self.block_size - (query_token_idx_cur_step + num_query_token_cur_step)
+            if remaining_tokens > 0:
+                num_query_token_next_step = max(num_query_token_next_step, min(remaining_tokens, 1))
             
             ########## Important: Prepare the tokens ##########
             # [cur_img_0, cur_query_1, ..., cur_query_n, cur_img_n, next_query_0, ..., next_query_m]
@@ -636,7 +641,7 @@ class RandARTransformer(nn.Module):
 
             # Step 5-5: Move the query pointer idx
             query_token_idx_cur_step = query_token_idx_next_step
-            if query_token_idx_cur_step > self.block_size:
+            if query_token_idx_cur_step >= self.block_size:
                 break
             
             last_input_pos = input_pos[input_pos.shape[0] - num_query_token_cur_step] # position of cur_query_0
@@ -646,4 +651,6 @@ class RandARTransformer(nn.Module):
         # Step 6: Return to raster order for tokenizer decoding
         reverse_permutation = torch.argsort(token_order, dim=-1).long().unsqueeze(-1).expand(-1, -1, 1)
         result_indices = torch.gather(result_indices.unsqueeze(-1), 1, reverse_permutation).squeeze(-1)
+        # Make sure all result indices are nonnegative
+        assert torch.all(result_indices >= 0), f"Tokens at positions {torch.nonzero(result_indices < 0)} have not been generated!"
         return result_indices

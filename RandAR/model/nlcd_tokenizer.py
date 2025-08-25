@@ -9,22 +9,8 @@ logger = logging.getLogger(__name__)
 
 class NLCDTokenizer:
     """Tokenizer for NLCD dataset - handles mapping between indices and NLCD values."""
-    
-    def __init__(self, vocab_size=None, value_mapping=None,):
-        self.vocab_size = vocab_size
-        self.codebook_embed_dim = 1  # Dummy value for compatibility
-        
-        # Store the mapping if provided
-        if value_mapping:
-            self.idx_to_value = value_mapping
-            self.value_to_idx = {v: k for k, v in value_mapping.items()}
-        else:
-            # Default identity mapping
-            self.idx_to_value = {i: i for i in range(vocab_size)}
-            self.value_to_idx = {i: i for i in range(vocab_size)}
-        
-        # NLCD colormap
-        self.lut = {
+
+    lut = {
             11: (0.278, 0.420, 0.627),
             12: (0.820, 0.867, 0.976),
             21: (0.867, 0.788, 0.788),
@@ -46,6 +32,20 @@ class NLCDTokenizer:
             90: (0.729, 0.847, 0.918),
             95: (0.439, 0.639, 0.729),  
         }
+    
+    def __init__(self, vocab_size=None, value_mapping=None,):
+        self.vocab_size = vocab_size
+        self.codebook_embed_dim = 1  # Dummy value for compatibility
+        
+        # Store the mapping if provided
+        if value_mapping:
+            self.idx_to_value = value_mapping
+            self.value_to_idx = {v: k for k, v in value_mapping.items()}
+        else:
+            # Default identity mapping
+            self.idx_to_value = {i: i for i in range(vocab_size)}
+            self.value_to_idx = {i: i for i in range(vocab_size)}
+        
 
         self.lut_arr = np.zeros((100, 3))
         for code, rgb in self.lut.items():
@@ -77,8 +77,7 @@ class NLCDTokenizer:
         for i in range(height):
             for j in range(width):
                 data_value = data[i, j]
-                lut_key = self.data_to_lut[data_value]
-                rgb = self.lut[lut_key]
+                rgb = self.lut[data_value]
                 rgb_img[i, j] = rgb
         return rgb_img
 

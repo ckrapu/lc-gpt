@@ -2,18 +2,16 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import os
 import time
 import argparse
 import numpy as np
 from PIL import Image
-from tqdm import tqdm
 import sys
 sys.path.append("./")
 from omegaconf import OmegaConf
 from accelerate.utils import ProjectConfiguration
-from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from accelerate import Accelerator, DistributedDataParallelKwargs
 import logging
@@ -25,12 +23,45 @@ from RandAR.utils import instantiate_from_config
 from RandAR.utils.visualization import make_grid
 from RandAR.utils.lr_scheduler import get_scheduler
 
-TOKENIZE = True
 
 def cycle(dl: torch.utils.data.DataLoader):
     while True:
         for data in dl:
             yield data
+
+
+def calculate_perplexity(model, data_loader, device, num_samples=500):
+    """Calculate perplexity on a subset of the test data."""
+    model.eval()
+    total_loss = 0.0
+    total_tokens = 0
+    samples_processed = 0
+    
+    with torch.no_grad():
+        for batch_idx, (x, y, _) in enumerate(data_loader):
+            if samples_processed >= num_samples:
+                break
+                
+            x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+            image_tokens = x  # Already flattened in dataset
+            cond = y.reshape(-1)
+            
+            # Forward pass
+            logits, loss, _ = model(image_tokens, cond, targets=image_tokens)
+            
+            # Accumulate loss and token count
+            batch_size = x.shape[0]
+            seq_len = x.shape[1] if len(x.shape) > 1 else 1
+            total_loss += loss.item() * batch_size * seq_len
+            total_tokens += batch_size * seq_len
+            samples_processed += batch_size
+    
+    # Calculate average loss and perplexity
+    avg_loss = total_loss / total_tokens if total_tokens > 0 else 0
+    perplexity = torch.exp(torch.tensor(avg_loss)).item()
+    
+    model.train()
+    return perplexity, avg_loss, samples_processed
 
 
 def main(args):
@@ -39,7 +70,7 @@ def main(args):
     # Setup accelerator
     experiment_dir = os.path.join(config.results_dir, config.exp_name)
     accelerator_config = ProjectConfiguration(project_dir=experiment_dir)
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     accelerator = Accelerator(
         project_config=accelerator_config,
         kwargs_handlers=[ddp_kwargs],
@@ -82,6 +113,37 @@ def main(args):
     per_gpu_batch_size = int(
         config.global_batch_size // accelerator.num_processes // config.accelerator.gradient_accumulation_steps
     )
+    
+    # Create test dataset using split attribute
+    test_dataset = None
+    test_data_loader = None
+    if hasattr(dataset, 'split'):
+        # Save original split
+        original_split = dataset.split
+        # Create test dataset
+        dataset.split = 'test'
+        test_dataset = instantiate_from_config(config.dataset)
+        test_dataset.split = 'test'
+        
+        # Create indices for random sampling from test set
+        test_indices = np.random.RandomState(config.global_seed).permutation(len(test_dataset))[:1000]
+        test_subset = Subset(test_dataset, test_indices)
+        
+        test_data_loader = DataLoader(
+            test_subset,
+            batch_size=per_gpu_batch_size,
+            shuffle=False,
+            num_workers=config.num_workers,
+            pin_memory=True,
+            drop_last=False,
+            persistent_workers=False,
+        )
+        
+        # Restore original split for training dataset
+        dataset.split = original_split
+        
+        logger.info(f"Created test dataset with {len(test_subset)} samples for perplexity evaluation")
+    
     data_loader = DataLoader(
         dataset,
         batch_size=per_gpu_batch_size,
@@ -285,6 +347,20 @@ def main(args):
                 
                 model.train()
             
+
+            if train_steps % config.eval_pplx_every == 0 and accelerator.is_main_process and test_data_loader is not None:
+                logger.info(f"Evaluating perplexity at step {train_steps}...")
+                perplexity, avg_test_loss, test_samples = calculate_perplexity(
+                    model, test_data_loader, accelerator.device, num_samples=500
+                )
+                logger.info(f"Test perplexity: {perplexity:.4f} (loss: {avg_test_loss:.4f}, samples: {test_samples})")
+                
+                if not args.no_wandb:
+                    accelerator.log({
+                        "test_perplexity": perplexity,
+                        "test_loss": avg_test_loss,
+                        "test_samples_evaluated": test_samples,
+                    }, step=train_steps)
             # Checkpointing
             if train_steps % config.ckpt_every == 0 and accelerator.is_main_process:
                 ckpt_path = os.path.join(checkpoint_dir, f"iter_{train_steps:05d}")

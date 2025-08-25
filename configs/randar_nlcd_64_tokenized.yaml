@@ -1,12 +1,12 @@
 ar_model:
   target: RandAR.model.randar_gpt.RandARTransformer
   params:
-    n_layer: 8        # Increased from 4 for more complex data
-    n_head: 8         # Increased from 4
-    dim: 256          # Increased from 128
+    n_layer: 8      
+    n_head: 8         
+    dim: 256          
     model_type: c2i
-    vocab_size: 27626    # 16 unique NLCD values
-    block_size: 16    # 8x8 image
+    vocab_size: 35173 
+    block_size: 256    
     num_classes: 1    # Single dummy class for now
     cls_token_num: 1
     resid_dropout_p: 0.1
@@ -16,18 +16,18 @@ ar_model:
     position_order: random
     grad_checkpointing: False
     zero_class_qk: True
-    num_inference_steps: 32  # For parallel decoding
+    num_inference_steps: 32  
 
 dataset:
   target: RandAR.dataset.nlcd_dataset.NLCDDataset
   params:
-    data_path: "data/data_size8_ratio8.npz"
+    data_path: "data/data_size32_ratio8.npz"
     split: train
     max_samples: 1000000
 tokenizer:
   target: RandAR.model.nlcd_tokenizer.NLCDTokenizer
   params:
-    vocab_size: 5807
+    vocab_size: 35173
 
 accelerator:
   gradient_accumulation_steps: 1
@@ -35,7 +35,7 @@ accelerator:
   log_with: wandb
 
 optimizer:
-  lr: 0.001  # Slightly lower than toy example
+  lr: 0.0005
   weight_decay: 0.01
   beta1: 0.9
   beta2: 0.95
@@ -50,19 +50,18 @@ lr_scheduler:
   num_cycles: 0.5
 
 # training related parameters
-exp_name: "randar_nlcd_8_tokenized"
-max_iters: 100000  # More iterations for real data
-global_batch_size: 128
+exp_name: "randar_nlcd_64_tokenized"
+max_iters: 100000  
+global_batch_size: 32
 ema: False
 ema_decay: 0.9999
 
 num_workers: 4
-log_every: 50
-ckpt_every: 10000
-visualize_every: 50
-eval_pplx_every: 5000
+log_every: 100
+ckpt_every: 5000
+visualize_every: 1000
 keep_last_k: 2
-resume_from: "results/randar_nlcd_8_tokenized/checkpoints/iter_22000"
+resume_from: "results/randar_nlcd_64_tokenized/checkpoints/iter_18000"
 global_seed: 42
 
 results_dir: "results/" 

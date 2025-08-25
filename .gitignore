@@ -3,6 +3,7 @@ start.sh # includes secrets
 .DS_Store
 settings.json
 .env
+.changelog
 *.npy
 *.ckpt
 *.h5

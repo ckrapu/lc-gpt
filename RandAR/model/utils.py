@@ -63,7 +63,7 @@ def calculate_num_query_tokens_for_parallel_decoding(cur_step, total_step, block
     num_query_tokens_next_step = max(num_query_tokens_next_step, 1)
     num_query_tokens_next_step = min(
         num_query_tokens_next_step,
-        block_size - query_token_idx_cur_step - num_query_token_cur_step - 1,
+        block_size - query_token_idx_cur_step - num_query_token_cur_step,
     )
 
     return num_query_tokens_next_step
