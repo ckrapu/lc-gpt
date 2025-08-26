@@ -6,7 +6,7 @@ ar_model:
     dim: 256          
     model_type: c2i
     vocab_size: 31971 
-    block_size: 256    
+    block_size: 4096    
     num_classes: 3    # Single dummy class for now
     cls_token_num: 1
     resid_dropout_p: 0.1
