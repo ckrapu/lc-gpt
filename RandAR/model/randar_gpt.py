@@ -24,6 +24,45 @@ from .llamagen_gpt import LabelEmbedder, CaptionEmbedder, MLP, RMSNorm, \
     FeedForward, KVCache, find_multiple, apply_rotary_emb, precompute_freqs_cis_2d
 
 
+class AuxiliaryEmbedder(nn.Module):
+    """Embeds auxiliary features with normalization and optional dropout."""
+    
+    def __init__(self, aux_dim, hidden_dim, output_dim, dropout_prob=0.1):
+        super().__init__()
+        self.aux_dim = aux_dim
+        self.output_dim = output_dim
+        self.dropout_prob = dropout_prob
+        
+        # Shallow MLP for processing auxiliary features
+        self.mlp = MLP(aux_dim, hidden_dim, output_dim)
+        
+        # Learnable scaling factor to control embedding strength
+        self.scale = nn.Parameter(torch.ones(1) * 0.1)
+        
+    def forward(self, aux, train=False):
+        # Check if aux is all zeros (no auxiliary data)
+        if torch.all(aux == 0):
+            # Return zeros with proper shape
+            batch_size = aux.shape[0]
+            return torch.zeros(batch_size, self.output_dim, device=aux.device, dtype=aux.dtype)
+        
+        # Apply dropout during training for robustness
+        if train and self.dropout_prob > 0:
+            drop_mask = torch.rand(aux.shape[0], device=aux.device) < self.dropout_prob
+            aux = torch.where(drop_mask.unsqueeze(-1), torch.zeros_like(aux), aux)
+        
+        # Process through MLP
+        embeddings = self.mlp(aux)
+        
+        # Normalize to unit sphere
+        embeddings = F.normalize(embeddings, p=2, dim=-1)
+        
+        # Apply learnable scaling
+        embeddings = self.scale * embeddings
+        
+        return embeddings
+
+
 def batch_apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor):
     # x: (bs, seq_len, n_head, head_dim)
     # freqs_cis (bs, seq_len, head_dim // 2, 2)
@@ -211,6 +250,9 @@ class RandARTransformer(nn.Module):
         num_inference_steps=88,
         zero_class_qk=True,
         grad_checkpointing=True,
+        aux_dim=None,
+        aux_embed_dim=None,
+        aux_dropout_prob=0.1,
     ):
         super().__init__()
         self.dim = dim
@@ -239,6 +281,16 @@ class RandARTransformer(nn.Module):
             raise Exception("please check model type")
         self.tok_embeddings = nn.Embedding(vocab_size, dim)
         self.tok_dropout = nn.Dropout(token_dropout_p)
+        
+        # Auxiliary embedding support
+        self.aux_dim = aux_dim
+        self.aux_embed_dim = aux_embed_dim or dim
+        if aux_dim is not None and aux_dim > 0:
+            self.aux_embedding = AuxiliaryEmbedder(
+                aux_dim, dim, self.aux_embed_dim, aux_dropout_prob
+            )
+        else:
+            self.aux_embedding = None
 
         # transformer blocks
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, n_layer)]
@@ -341,9 +393,10 @@ class RandARTransformer(nn.Module):
         targets: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
         valid: Optional[torch.Tensor] = None,
+        aux: Optional[torch.Tensor] = None,
     ):
         if idx is not None and cond_idx is not None:
-            return self.forward_train(idx, cond_idx, token_order, input_pos, targets, mask, valid)
+            return self.forward_train(idx, cond_idx, token_order, input_pos, targets, mask, valid, aux)
         else:
             raise ValueError("idx and cond_idx cannot be both None")
         
@@ -354,7 +407,8 @@ class RandARTransformer(nn.Module):
                       input_pos: Optional[torch.Tensor] = None,
                       targets: Optional[torch.Tensor] = None,
                       mask: Optional[torch.Tensor] = None,
-                      valid: Optional[torch.Tensor] = None,):
+                      valid: Optional[torch.Tensor] = None,
+                      aux: Optional[torch.Tensor] = None,):
         """ Args:
             idx: [bsz, seq_len] GT image tokens for teacher forcing
             cond_idx: [bsz, cls_token_num] Cls tokens
@@ -391,6 +445,13 @@ class RandARTransformer(nn.Module):
         ] # [bsz, cls_token_num, dim]
 
         token_embeddings = self.tok_embeddings(idx)
+        
+        # Add auxiliary embeddings to token embeddings (not position tokens)
+        if self.aux_embedding is not None and aux is not None:
+            aux_emb = self.aux_embedding(aux, train=self.training)
+            # Add to all token embeddings in the sequence
+            token_embeddings = token_embeddings + aux_emb.unsqueeze(1)
+        
         token_embeddings = self.tok_dropout(token_embeddings) # [bsz, seq_len, dim]
         position_instruction_tokens = self.get_position_instruction_tokens(token_order) # [bsz, seq_len, dim]
 
@@ -432,11 +493,13 @@ class RandARTransformer(nn.Module):
     def forward_inference(self, 
                           x: torch.Tensor, 
                           freqs_cis: torch.Tensor, 
-                          input_pos: torch.Tensor):
+                          input_pos: torch.Tensor,
+                          aux: Optional[torch.Tensor] = None):
         """ Args:
             x: [bs, query_num, dim] Input tokens
             freqs_cis: [bs, query_num, n_head, dim // n_head] Frequency embeddings
             input_pos: [query_num] Position index for each token
+            aux: [bs, aux_dim] Auxiliary features (optional)
         """
         bs = x.shape[0]
         mask = self.causal_mask[:bs, None, input_pos]
@@ -502,6 +565,7 @@ class RandARTransformer(nn.Module):
         temperature: float = 1.0,
         top_k: int = 0,
         top_p: float = 1.0,
+        aux: Optional[torch.Tensor] = None,
     ):
         """ Args:
             cond: [bsz, seq_len] Conditional tokens
@@ -531,6 +595,11 @@ class RandARTransformer(nn.Module):
         # Step-2: Prepare the freqs_cis and position_instruction_tokens
         position_instruction_tokens = self.get_position_instruction_tokens(token_order)
         img_token_freq_cis = self.freqs_cis[self.cls_token_num:].clone().to(token_order.device)[token_order]
+        
+        # Prepare auxiliary embedding if provided
+        aux_emb = None
+        if self.aux_embedding is not None and aux is not None:
+            aux_emb = self.aux_embedding(aux, train=False)
 
         # Step-3: Prepare CFG
         if cfg_scales[-1] > 1.0:
@@ -588,6 +657,11 @@ class RandARTransformer(nn.Module):
             result_indices[:, query_token_idx_cur_step : query_token_idx_cur_step + num_query_token_cur_step] = indices.clone()
             
             img_tokens = self.tok_embeddings(indices)
+            
+            # Add auxiliary embeddings to generated tokens if available
+            if aux_emb is not None:
+                img_tokens = img_tokens + aux_emb.unsqueeze(1)
+            
             if cfg_scales[-1] > 1.0:
                 img_tokens = torch.cat([img_tokens, img_tokens], dim=0)
 

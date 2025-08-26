@@ -38,7 +38,7 @@ def calculate_perplexity(model, data_loader, device, num_samples=500):
     samples_processed = 0
     
     with torch.no_grad():
-        for batch_idx, (x, y, _) in enumerate(data_loader):
+        for batch_idx, (x, y, aux) in enumerate(data_loader):
             if samples_processed >= num_samples:
                 break
                 
@@ -47,7 +47,7 @@ def calculate_perplexity(model, data_loader, device, num_samples=500):
             cond = y.reshape(-1)
             
             # Forward pass
-            logits, loss, _ = model(image_tokens, cond, targets=image_tokens)
+            logits, loss, _ = model(image_tokens, cond, aux=aux, targets=image_tokens)
             
             # Accumulate loss and token count
             batch_size = x.shape[0]
@@ -236,13 +236,14 @@ def main(args):
     
     while train_steps < config.max_iters:
         model.train()
-        x, y, _ = next(data_loader)
+        x, y, aux = next(data_loader)
         x, y = x.to(accelerator.device, non_blocking=True), y.to(accelerator.device, non_blocking=True)
+        aux = aux.to(accelerator.device, non_blocking=True)
         image_tokens = x  # Already flattened in dataset
         cond = y.reshape(-1)
 
         with accelerator.accumulate(model):
-            logits, loss, token_order = model(image_tokens, cond, targets=image_tokens)
+            logits, loss, token_order = model(image_tokens, cond, aux=aux, targets=image_tokens)
             accelerator.backward(loss)
             
             if accelerator.sync_gradients and config.optimizer.max_grad_norm != 0.0:
@@ -303,6 +304,7 @@ def main(args):
                         gen_indices = model.module.generate(
                             cond=cond[:vis_num],
                             token_order=None,
+                            aux=aux[:vis_num],
                             cfg_scales=[1.0, 1.0],
                             num_inference_steps=-1,
                             temperature=1.0,
@@ -314,6 +316,7 @@ def main(args):
                         gen_indices = model.generate(
                             cond=cond[:vis_num],
                             token_order=None,
+                            aux=aux[:vis_num],
                             cfg_scales=[1.0, 1.0],
                             num_inference_steps=-1,
                             temperature=1.0,

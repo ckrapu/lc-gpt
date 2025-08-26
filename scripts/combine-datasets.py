@@ -34,10 +34,12 @@ def combine_datasets(image_size, ratios, output_file, tokenizer_downsample_ratio
     all_test_data = []
     all_train_coords = []
     all_test_coords = []
+    all_train_aux = []
+    all_test_aux = []
     train_labels = []
     test_labels = []
     
-    # First pass: collect all land cover images
+    # First pass: collect all land cover images and auxiliary data
     for ratio in ratios:
         input_file = f"../data/data_size{image_size}_ratio{ratio}.npz"
         print(f"Loading {input_file}...")
@@ -57,6 +59,25 @@ def combine_datasets(image_size, ratios, output_file, tokenizer_downsample_ratio
             all_test_data.append(data['test_data'])
             all_train_coords.append(data['train_coords'])
             all_test_coords.append(data['test_coords'])
+            
+            # Handle auxiliary data
+            if 'train_aux' in data:
+                all_train_aux.append(data['train_aux'])
+                print(f"  Found train_aux with shape {data['train_aux'].shape}")
+            else:
+                # Create zero auxiliary data if not present
+                n_train = len(train_lc)
+                all_train_aux.append(np.zeros((n_train, 2), dtype=np.float32))
+                print(f"  No train_aux found, using zeros")
+                
+            if 'test_aux' in data:
+                all_test_aux.append(data['test_aux'])
+                print(f"  Found test_aux with shape {data['test_aux'].shape}")
+            else:
+                # Create zero auxiliary data if not present
+                n_test = len(test_lc)
+                all_test_aux.append(np.zeros((n_test, 2), dtype=np.float32))
+                print(f"  No test_aux found, using zeros")
             
             # Create labels
             train_labels.extend([ratio] * len(train_lc))
@@ -100,11 +121,15 @@ def combine_datasets(image_size, ratios, output_file, tokenizer_downsample_ratio
     test_data = np.concatenate(all_test_data, axis=0)
     train_coords = np.concatenate(all_train_coords, axis=0)
     test_coords = np.concatenate(all_test_coords, axis=0)
+    train_aux = np.concatenate(all_train_aux, axis=0)
+    test_aux = np.concatenate(all_test_aux, axis=0)
     
     # Save combined dataset
     print(f"\nSaving combined dataset to {output_file}")
     print(f"Total train samples: {len(train_data)}")
     print(f"Total test samples: {len(test_data)}")
+    print(f"Train auxiliary shape: {train_aux.shape}")
+    print(f"Test auxiliary shape: {test_aux.shape}")
     
     np.savez_compressed(
         output_file,
@@ -116,7 +141,9 @@ def combine_datasets(image_size, ratios, output_file, tokenizer_downsample_ratio
         test_data_tokenized=test_images_tokenized,
         decode_table=decode_table,
         train_label=np.array(train_labels),
-        test_label=np.array(test_labels)
+        test_label=np.array(test_labels),
+        train_aux=train_aux,
+        test_aux=test_aux
     )
     
     print("Done!")

@@ -51,6 +51,7 @@ venv/
 
 old/
 logs/
+!logs/.gitkeep
 design/
 paper/
 

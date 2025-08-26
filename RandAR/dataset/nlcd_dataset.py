@@ -11,30 +11,57 @@ class NLCDDataset(Dataset):
     - train_coords: (N, 2)
     - test_data: (N, 2, H, W) (2nd band is ignored)
     - test_coords: (N, 2)
+
+    Optionally, there may also be arrays `train_labels` and `test_labels` which should be of shape (N,)
+    or (N, 1). These are discrete class labels which should be applied to the whole image, and are currently
+    used to encode the scale/resolution fo the original data.
+
     """
     
     def __init__(self, data_path, split='train', max_samples=None):
         self.data_path = data_path
         self.split = split
-        
+
         data = np.load(data_path)
 
-        self.data_train = data['train_data_tokenized']
-        self.coords_train = data['train_coords'] if 'train_coords' in data else None
+        self.data_train   = data['train_data_tokenized']
+        self.coords_train = data.get('train_coords', None)
+        self.labels_train = data.get('train_labels', None)
 
-        self.data_test = data['test_data_tokenized']
-        self.coords_test = data['test_coords'] if 'test_coords' in data else None
+        self.data_test   = data['test_data_tokenized']
+        self.coords_test = data.get('test_coords', None)
+        self.labels_test = data.get('test_labels', None)
+
+        # Check for auxiliary data in the npz file
+        self.aux_train = data.get('train_aux', None)
+        self.aux_test = data.get('test_aux', None)
+        
+        # Log whether auxiliary data is present
+        if self.aux_train is not None:
+            print(f"Found auxiliary training data with shape: {self.aux_train.shape}")
+            self.aux_dim = self.aux_train.shape[1]  # Use actual dimension from data
+        else:
+            print(f"No auxiliary training data found in {data_path}, will use zero vectors of dimension {self.aux_dim}")
+
+        if self.aux_test is not None:
+            print(f"Found auxiliary test data with shape: {self.aux_test.shape}")
+        else:
+            print(f"No auxiliary test data found in {data_path}, will use zero vectors of dimension {aux_dim}")
         
         # Limit samples if requested
         if max_samples is not None and max_samples < len(self.data_train):
             self.data_train = self.data_train[:max_samples]
             if self.coords_train is not None:
                 self.coords_train = self.coords_train[:max_samples]
+            if self.aux_train is not None:
+                self.aux_train = self.aux_train[:max_samples]
         if max_samples is not None and max_samples < len(self.data_test):
             self.data_test = self.data_test[:max_samples]
             if self.coords_test is not None:
                 self.coords_test = self.coords_test[:max_samples]
                 self.coords_train = self.coords_train[:max_samples]
+            if self.aux_test is not None:
+                self.aux_test = self.aux_test[:max_samples]
 
         
         self.vocab_size = len(data['decode_table'])
@@ -64,13 +91,30 @@ class NLCDDataset(Dataset):
     
     def __getitem__(self, idx):
         if self.split == 'train':
-            tokens = torch.from_numpy(self.data_train[idx]).flatten()  
+            tokens = torch.from_numpy(self.data_train[idx]).flatten()
+            # Get auxiliary data if available, otherwise use zeros
+            if self.aux_train is not None:
+                aux = torch.from_numpy(self.aux_train[idx]).float()
+            else:
+                aux = torch.zeros(self.aux_dim, dtype=torch.float32)
+
+            if self.labels_train is not None:
+                label = torch.from_numpy(self.labels_train[idx]).long()
+            else:
+                label = torch.tensor(0, dtype=torch.long)
+                
         elif self.split == 'test':
             tokens = torch.from_numpy(self.data_test[idx]).flatten()
+            # Get auxiliary data if available, otherwise use zeros
+            if self.aux_test is not None:
+                aux = torch.from_numpy(self.aux_test[idx]).float()
+            else:
+                aux = torch.zeros(self.aux_dim, dtype=torch.float32)
+
+            if self.labels_test is not None:
+                label = torch.from_numpy(self.labels_test[idx]).long()
+            else:
+                label = torch.tensor(0, dtype=torch.long)
         else:
             raise ValueError(f"Unknown split: {self.split}")
-
-        # Dummy class label (we could use coords or other metadata later)
-        label = torch.tensor(0, dtype=torch.long)
-        
-        return tokens, label, idx 
+        return tokens, label, aux
