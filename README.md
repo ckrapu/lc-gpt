@@ -98,12 +98,35 @@ python scripts/sample-chain.py \
 
 ## Operational notes:
 
-#### Syncing entire directory with exclusions
+#### Startup on fresh install
+These commands set up the local environment and copy any required data files from S3.
+
 ```
-source .env && aws s3 cp . s3://lc-inpaint/lc-gpt/ --recursive --exclude ".*" --exclude "*/.*" --exclude "venv/*" --exclude "__pycache__/*" --exclude "*.pyc" --exclude "*.img" --exclude "*.tif" --exclude "*.zip" --exclude "*.ige" --exclude "*/wandb/*" --exclude "old/*" --exclude "/checkpoints/*"
+curl -LsSf https://astral.sh/uv/install.sh | sh && source $HOME/.local/bin/env && uv venv --clear && source .venv/bin/activate && uv pip install -r requirements.txt
+uv pip install awscli && aws configure && aws s3 sync s3://lc-inpaint/data ./data --exclude "*" --include "*.npz"
 ```
+
+#### Syncing data files in `results/` FROM local to S3
+```
+aws s3 sync ./results s3://lc-inpaint/results
+```
+
+
+#### Copying data from s3 to local
+aws s3 sync s3://lc-inpaint/data ./data --exclude="*" --include="*.npz"
+
+
+
 
 #### Running multiple-resolution dataset creation
 ```
 cd scripts; nohup sh prep-multi-res-datasets.sh > ../logs/multires-data-prep-08-25-2025.log &
+aws s3 sync ./data s3://lc-inpaint/data --exclude "*" --include "*.npz"
 ```
+
+## FAQ / debugging
+*The generated and prediction images in the `visualizations/` folder producing from a training run show offset issues or are too small*
+- Make sure the `block_size` parameter in the config file matches the actual size of the tokenized data passed to the model in `train.py`
+
+*When using `accelerate launch train.py` with multi-GPU setup, the training hangs and doesn't start properly*
+- You may need certain NCCL environment variables to be adjusted for this to work. Use the script `train-multi.sh` to set these automatically.

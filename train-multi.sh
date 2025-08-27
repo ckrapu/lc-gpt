@@ -21,5 +21,5 @@ accelerate launch \
     --mixed_precision fp16 \
     --dynamo_backend no \
     train.py \
-    --config configs/randar_nlcd_32_tokenized.yaml \
+    --config configs/randar_nlcd_128.yaml \
     "$@"
