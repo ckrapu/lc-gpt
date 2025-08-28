@@ -54,8 +54,8 @@ lr_scheduler:
   num_cycles: 0.5
 
 # training related parameters
-exp_name: "randar_nlcd_128"
-max_iters: 100000  
+exp_name: "randar_nlcd_128_large"
+max_iters: 1000000  
 global_batch_size: 128
 ema: False
 ema_decay: 0.9999
@@ -66,7 +66,7 @@ ckpt_every: 10000
 visualize_every: 1000
 eval_pplx_every: 5000
 keep_last_k: 2
-resume_from: "results/randar_nlcd_128/checkpoints/iter_18000"
+resume_from: "results/randar_nlcd_128_large/checkpoints/iter_18000"
 global_seed: 42
 
 results_dir: "results/" 
