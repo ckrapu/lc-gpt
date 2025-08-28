@@ -16,6 +16,8 @@ from accelerate.utils import set_seed
 from accelerate import Accelerator, DistributedDataParallelKwargs
 import logging
 from dotenv import load_dotenv
+import wandb
+
 # Load environment variables from .env file
 load_dotenv(dotenv_path="../.env")
 
@@ -341,7 +343,6 @@ def main(args):
                     logger.info(f"Saved visualizations at step {train_steps}")
                     
                     if not args.no_wandb:
-                        import wandb
                         accelerator.log({
                             "pred_recon": wandb.Image(pred_grid),
                             "gt": wandb.Image(gt_grid),
@@ -370,6 +371,21 @@ def main(args):
                 os.makedirs(ckpt_path, exist_ok=True)
                 accelerator.save_state(ckpt_path)
                 logger.info(f"Saved checkpoint at iteration {train_steps}")
+                
+                # Save model to wandb
+                if not args.no_wandb:
+                    artifact = wandb.Artifact(
+                        name=f"{config.exp_name}-model",
+                        type="model",
+                        description=f"Model checkpoint at iteration {train_steps}",
+                        metadata={
+                            "train_steps": train_steps,
+                            "config": dict(config),
+                        },
+                    )
+                    artifact.add_dir(ckpt_path)
+                    wandb.log_artifact(artifact, aliases=["latest"])
+                    logger.info(f"Saved model to wandb artifact at iteration {train_steps}")
     
     # Final checkpoint
     if accelerator.is_main_process:
@@ -377,6 +393,22 @@ def main(args):
         os.makedirs(final_ckpt_path, exist_ok=True)
         accelerator.save_state(final_ckpt_path)
         logger.info("Training completed!")
+        
+        # Save final model to wandb
+        if not args.no_wandb:
+            artifact = wandb.Artifact(
+                name=f"{config.exp_name}-model",
+                type="model",
+                description=f"Final model checkpoint after {train_steps} iterations",
+                metadata={
+                    "train_steps": train_steps,
+                    "config": dict(config),
+                    "final": True,
+                }
+            )
+            artifact.add_dir(final_ckpt_path)
+            wandb.log_artifact(artifact, aliases=["latest", "final"])
+            logger.info("Saved final model to wandb artifact")
     
     accelerator.wait_for_everyone()
     if not args.no_wandb:
