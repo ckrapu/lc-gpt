@@ -45,5 +45,5 @@ accelerate launch \
     --mixed_precision fp16 \
     $DYNAMO_FLAG \
     train.py \
-    --config configs/randar_nlcd_128.yaml \
+    --config configs/randar_nlcd_128_large.yaml \
     "$@"
