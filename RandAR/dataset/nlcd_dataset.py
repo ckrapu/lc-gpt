@@ -100,6 +100,7 @@ class NLCDDataset(Dataset):
 
             if self.labels_train is not None:
                 label = torch.from_numpy(self.labels_train[idx]).long()
+                print(f"Found unique labels from the `train_labels` data: {torch.unique(label)}")
             else:
                 label = torch.tensor(0, dtype=torch.long)
                 

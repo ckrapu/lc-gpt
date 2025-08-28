@@ -5,7 +5,7 @@ ar_model:
     n_head: 8         
     dim: 256          
     model_type: c2i
-    vocab_size: 31971 
+    vocab_size: 49928 
     block_size: 4096    
     num_classes: 5    # Single dummy class for now
     cls_token_num: 1
@@ -31,7 +31,7 @@ dataset:
 tokenizer:
   target: RandAR.model.nlcd_tokenizer.NLCDTokenizer
   params:
-    vocab_size: 31971
+    vocab_size: 49928
 
 accelerator:
   gradient_accumulation_steps: 1
@@ -56,13 +56,13 @@ lr_scheduler:
 # training related parameters
 exp_name: "randar_nlcd_128"
 max_iters: 100000  
-global_batch_size: 8
+global_batch_size: 2
 ema: False
 ema_decay: 0.9999
 
 num_workers: 4
-log_every: 100
-ckpt_every: 5000
+log_every: 1000
+ckpt_every: 10000
 visualize_every: 1000
 eval_pplx_every: 5000
 keep_last_k: 2

@@ -1,9 +1,9 @@
 IMAGE_SIZE=128
-N_SAMPLES_MAX=3000000
+N_SAMPLES_MAX=100000000
 CLEANUP=true
-N_GRID_UNIT=50
+N_GRID_UNIT=30
 
-for DOWNSAMPLE_RATIO in 2 4 8 16 32; do
+for DOWNSAMPLE_RATIO in 16 8 4 2; do
     echo "Processing downsample ratio: $DOWNSAMPLE_RATIO"
     papermill prep-dataset.ipynb prep-dataset-$DOWNSAMPLE_RATIO.ipynb \
      -p image_size $IMAGE_SIZE \
@@ -19,5 +19,5 @@ done
 
 echo "Combining datasets..."
 python combine-datasets.py --image-size $IMAGE_SIZE \
-    --ratios 2 4 8 16 32\
+    --ratios 16 8 4 2 \
     --output ../data/combined_multi_res.npz
