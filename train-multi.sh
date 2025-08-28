@@ -12,7 +12,7 @@ echo "Detected $NUM_GPUS GPU(s) on this device"
 
 # Check if any GPU is Hopper or Blackwell
 if nvidia-smi --query-gpu=name --format=csv,noheader | grep -Eiq 'Hopper|H100|H200|Blackwell|B100|B200|GB200'; then
-    DYNAMO_FLAG="--dynamo_backend yes"
+    DYNAMO_FLAG="--dynamo_backend inductor"
     echo "Hopper or Blackwell GPU detected: enabling Dynamo backend."
 else
     DYNAMO_FLAG="--dynamo_backend no"
@@ -26,7 +26,7 @@ GPU_LIST=$(seq -s, 0 $((NUM_GPUS-1)))
 export NCCL_DEBUG=INFO
 export NCCL_TIMEOUT=1800  # Increase timeout to 30 minutes (from default 10 minutes)
 export NCCL_P2P_DISABLE=1  # Disable P2P for consumer GPUs like RTX A5000
-export NCCL_IB_DISABLE=1   # Disable InfiniBand if not available
+export NCCL_IB_DISABLE=0   # Disable InfiniBand if not available
 export CUDA_VISIBLE_DEVICES=$GPU_LIST  # Set GPUs dynamically
 
 echo "Setting CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
