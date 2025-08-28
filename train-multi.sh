@@ -10,6 +10,15 @@ fi
 
 echo "Detected $NUM_GPUS GPU(s) on this device"
 
+# Check if any GPU is Hopper or Blackwell
+if nvidia-smi --query-gpu=name --format=csv,noheader | grep -Eiq 'Hopper|H100|H200|Blackwell|B100|B200|GB200'; then
+    DYNAMO_FLAG="--dynamo_backend yes"
+    echo "Hopper or Blackwell GPU detected: enabling Dynamo backend."
+else
+    DYNAMO_FLAG="--dynamo_backend no"
+    echo "No Hopper or Blackwell GPU detected: Dynamo backend disabled."
+fi
+
 # Create CUDA_VISIBLE_DEVICES string (0,1,2,... for all available GPUs)
 GPU_LIST=$(seq -s, 0 $((NUM_GPUS-1)))
 
@@ -34,7 +43,7 @@ accelerate launch \
     --num_processes $NUM_GPUS \
     --num_machines 1 \
     --mixed_precision fp16 \
-    --dynamo_backend no \
+    $DYNAMO_FLAG \
     train.py \
     --config configs/randar_nlcd_128.yaml \
     "$@"
