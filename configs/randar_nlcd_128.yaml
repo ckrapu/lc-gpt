@@ -25,7 +25,7 @@ ar_model:
 dataset:
   target: RandAR.dataset.nlcd_dataset.NLCDDataset
   params:
-    data_path: "data/combined_multi_res.npz"
+    data_path: "data/data_128_final.npz"
     split: train
     max_samples: 3000000
 tokenizer:

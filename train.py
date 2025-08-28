@@ -377,7 +377,7 @@ def main(args):
                     artifact = wandb.Artifact(
                         name=f"{config.exp_name}-model",
                         type="model",
-                        description=f"Model checkpoint at iteration {train_steps}",
+                        description="Most recent model checkpoint",
                         metadata={
                             "train_steps": train_steps,
                             "config": dict(config),
@@ -385,7 +385,7 @@ def main(args):
                     )
                     artifact.add_dir(ckpt_path)
                     wandb.log_artifact(artifact, aliases=["latest"])
-                    logger.info(f"Saved model to wandb artifact at iteration {train_steps}")
+                    logger.info(f"Updated W&B with latest checkpoint at iteration {train_steps}")
     
     # Final checkpoint
     if accelerator.is_main_process:

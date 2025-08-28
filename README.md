@@ -111,10 +111,16 @@ uv pip install awscli && aws configure && aws s3 sync s3://lc-inpaint/data ./dat
 aws s3 sync ./results s3://lc-inpaint/results
 ```
 
+#### Syncing `.npz` data files in `data/` FROM local to S3
+```
+aws s3 sync ./data s3://lc-inpaint/data --exclude="*" --include="*_final.npz"
+```
+
 
 #### Copying data from s3 to local
-aws s3 sync s3://lc-inpaint/data ./data --exclude="*" --include="*.npz"
-
+```
+aws s3 sync ./data s3://lc-inpaint/data --exclude="*" --include="*_final.npz"
+```
 
 
 
