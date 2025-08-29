@@ -28,7 +28,7 @@ The training and evaluation code requires data in a `.npz` file with keys `train
 
 The first channel contains integer-valued land use/land cover classes.
 
-The `scripts/prep-dataset.ipynb` notebook implements the data cleaning pipeline. The process extracts square image patches from NLCD raster data and optionally combines them with elevation data.
+The `scripts/prep-dataset.ipynb` notebook implements the data cleaning pipeline. The process extracts square image patches from NLCD raster data and optionally combines them with elevation data. It also tokenizes the data to enable modeling larger patches with single tokens.
 
 The required input files are: `nlcd_2021_land_cover_l48_20230630.img`, the National Land Cover Database raster covering the continental US and optionally the SRTM elevation tiles downloaded via `elevation` in `scripts/prep-dataset.ipynb`. This script produces `.npz` files named like `data_XX.npz` where `XX` is the resolution of the data produced by the pipeline. This file has the following key/value pairs:
 
@@ -36,6 +36,27 @@ The required input files are: `nlcd_2021_land_cover_l48_20230630.img`, the Natio
   - `test_data`: Test samples array with shape `(N_test, 2, XX, XX)`
   - `train_coords`: Longitude/latitude coordinates of training samples with shape `(N_train, 2)`
   - `test_coords`: Longitude/latitude coordinates of test samples with shape `(N_test, 2)`
+  - `decode_table`
+
+### Combined multi-resolution dataset format
+The script `scripts/combine-datasets.py` produces a combined `.npz` with the following keys:
+
+  - `train_data`: Concatenated training samples, shape `(N_train, C, H, W)`
+  - `test_data`: Concatenated test samples, shape `(N_test, C, H, W)`
+  - `train_coords`: Concatenated training sample coordinates, shape `(N_train, 2)`
+  - `test_coords`: Concatenated test sample coordinates, shape `(N_test, 2)`
+  - `train_data_tokenized`: Tokenized land cover channel using a unified decode table; tokens correspond to D×D patches. Shape `(N_train, H//D, W//D)`
+  - `test_data_tokenized`: Tokenized land cover channel for test set. Shape `(N_test, H//D, W//D)`
+  - `decode_table`: Unified token decode table mapping token index → D×D patch. Shape `(T, D, D)`
+  - `train_label`: Integer label per training sample indicating the downsample ratio used to create it. Shape `(N_train,)`
+  - `test_label`: Integer label per test sample indicating the downsample ratio. Shape `(N_test,)`
+  - `train_aux`: Auxiliary features for training samples. If not present in source datasets, zeros are used. Shape `(N_train, 2)`
+  - `test_aux`: Auxiliary features for test samples. If not present in source datasets, zeros are used. Shape `(N_test, 2)`
+
+Notes:
+
+- D is the tokenizer downsample ratio (default `2`, configurable via `--tokenizer-downsample-ratio`).
+- T is the number of unique tokens discovered across all train/test images at D×D granularity.
 
 ## Generating a new image
 The code below uses a script to produce an animation of a new NLCD image being created one pixel at a time in random order.
@@ -110,6 +131,12 @@ uv pip install awscli && aws configure && aws s3 sync s3://lc-inpaint/data ./dat
 ```
 aws s3 sync ./results s3://lc-inpaint/results
 ```
+
+Or, going the other direction:
+```
+aws s3 sync  s3://lc-inpaint/results ./results
+```
+
 
 #### Syncing `.npz` data files in `data/` FROM local to S3
 ```
