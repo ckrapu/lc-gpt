@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 from RandAR.utils import instantiate_from_config
 from RandAR.utils.inpainting import generate_inpainting
 from RandAR.model.nlcd_tokenizer import NLCDTokenizer
+from RandAR.dataset.nlcd_dataset import detokenize
 
 
 
@@ -93,7 +94,7 @@ def visualize_inpainting_samples(model, dataset, device, args):
     dataset_indices = random.sample(range(len(dataset)), args.n_plots)
     
     # Create figure
-    fig, axes = plt.subplots(args.n_plots, args.n_samples_viz + 1, figsize=(2*(args.n_samples_viz + 1), 2*args.n_plots))
+    fig, axes = plt.subplots(args.n_plots, args.n_samples + 1, figsize=(2*(args.n_samples + 1), 2*args.n_plots))
     fig.patch.set_facecolor('black')
     
     if args.n_plots == 1:
@@ -129,13 +130,14 @@ def visualize_inpainting_samples(model, dataset, device, args):
         known_tokens = torch.tensor(known_tokens, dtype=torch.long)
         unknown_positions = torch.tensor(unknown_positions, dtype=torch.long)
         
-        # Show original image
-        real_img = real_tokens.reshape(args.size, args.size).numpy()
-        axes[img_idx, 0].imshow(NLCDTokenizer.nlcd_to_rgb(real_img), interpolation='nearest')
+        # Show original image (detokenized to raw NLCD classes)
+        token_grid = real_tokens.reshape(args.size, args.size).cpu().numpy()
+        decoded_raw = detokenize(token_grid, dataset.decode_table)
+        axes[img_idx, 0].imshow(NLCDTokenizer.nlcd_to_rgb(decoded_raw), interpolation='nearest')
         axes[img_idx, 0].axis('off')
         
-        # Generate n_samples_viz inpainted versions
-        for j in range(args.n_samples_viz):
+        # Generate n_samples inpainted versions
+        for j in range(args.n_samples):
             with torch.no_grad():
                 gen_indices = generate_inpainting(
                     model=model,
@@ -149,22 +151,25 @@ def visualize_inpainting_samples(model, dataset, device, args):
                     top_p=args.top_p,
                 )
                 
-                # Convert to 2D image
+                # Convert to 2D token grid
                 gen_indices_np = gen_indices[0].cpu().numpy()
-                gen_img = np.zeros((args.size, args.size))
+                gen_token_grid = np.zeros((args.size, args.size), dtype=np.int64)
                 
                 # Fill in known pixels
                 for pos, token in zip(known_positions, known_tokens):
-                    row, col = pos // args.size, pos % args.size
-                    gen_img[row, col] = token.item()
+                    row, col = (pos.item() // args.size), (pos.item() % args.size)
+                    gen_token_grid[row, col] = token.item()
                 
                 # Fill in generated pixels
                 for pos in unknown_positions:
-                    row, col = pos // args.size, pos % args.size
-                    gen_img[row, col] = gen_indices_np[pos]
+                    row, col = (pos.item() // args.size), (pos.item() % args.size)
+                    gen_token_grid[row, col] = gen_indices_np[pos]
+                
+                # Detokenize to raw NLCD classes for visualization
+                gen_raw = detokenize(gen_token_grid, dataset.decode_table)
                 
                 # Show generated image
-                axes[img_idx, j+1].imshow(NLCDTokenizer.nlcd_to_rgb(gen_img), interpolation='nearest')
+                axes[img_idx, j+1].imshow(NLCDTokenizer.nlcd_to_rgb(gen_raw), interpolation='nearest')
                 axes[img_idx, j+1].axis('off')
 
     
@@ -418,15 +423,17 @@ def main(args):
     print(f"Loading config from: {args.config}")
     print(f"Using checkpoint: {args.gpt_ckpt}")
     print(f"Device: {device}")
-    print(f"Image size: {args.size}x{args.size}")
-    print(f"Mask type: {args.mask_type}")
-    print(f"Mask ratio: {args.mask_ratio}")
-    print(f"Number of test images: {args.n_images}")
-    print(f"Random seed: {args.seed}")
     
     # Create dataset
     dataset = instantiate_from_config(config.dataset)
     vocab_size = dataset.vocab_size
+    
+    # Use dataset's token grid size
+    token_h, token_w = dataset.image_shape
+    if token_h != token_w:
+        raise ValueError(f"Token grid must be square, got {token_h}x{token_w}")
+    args.size = token_h
+    print(f"Token grid size set from dataset: {args.size}x{args.size}")
     
     # Update config with actual vocab size
     config.ar_model.params.vocab_size = vocab_size
@@ -506,7 +513,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, required=True, help="Path to config file")
     parser.add_argument("--gpt-ckpt", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--n-images", type=int, default=100, help="Number of random images to evaluate")
-    parser.add_argument("--size", type=int, default=32, help="Size of each NLCD image (default: 32)")
+    parser.add_argument("--size", type=int, default=64, help="Token grid size (auto-set from dataset)")
     parser.add_argument("--mask-ratio", type=float, default=0.5, 
                        help="Ratio of interior region to mask for inpainting (default: 0.5)")
     parser.add_argument("--mask-type", type=str, default="interior", choices=["interior", "random"],

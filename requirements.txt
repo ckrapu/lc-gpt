@@ -2,6 +2,7 @@ cartopy==0.23.0
 dotenv
 geopandas==0.13.2
 imageio==2.35.1
+invoke
 ipykernel==6.29.5
 ipywidgets
 jupyter

@@ -16,6 +16,7 @@ from omegaconf import OmegaConf
 from RandAR.utils import instantiate_from_config
 from RandAR.utils.inpainting import generate_inpainting
 from RandAR.model.nlcd_tokenizer import NLCDTokenizer
+from RandAR.dataset.nlcd_dataset import detokenize
 
 plt.style.use('dark_background')
 
@@ -27,7 +28,7 @@ def main():
     parser.add_argument("--t", type=int, default=100, help="Number of Gibbs sampling iterations")
     parser.add_argument("--output-file", type=str, default="results/visualizations/sample_chain.gif", help="Output animation filename (optional)")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device to use")
-    parser.add_argument("--size", type=int, default=32, help="Size of each NLCD image")
+    parser.add_argument("--size", type=int, default=None, help="Token grid size (auto-set from dataset if None)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--top-k", type=int, default=0, help="Top-k sampling (0 = disabled)")
@@ -38,8 +39,6 @@ def main():
     parser.add_argument("--frame-interval", type=int, default=10, help="Save animation frames every N samples (default: 10)")
     
     args = parser.parse_args()
-    
-    # No validation needed since both have defaults now
     
     # Set random seeds
     torch.manual_seed(args.seed)
@@ -53,8 +52,6 @@ def main():
     print(f"Loading config from: {args.config}")
     print(f"Using checkpoint: {args.gpt_ckpt}")
     print(f"Device: {device}")
-    print(f"Image size: {args.size}x{args.size}")
-    print(f"Number of parallel chains: {args.n_chains}")
     print(f"Gibbs sampling iterations: {args.t}")
     if args.output_file:
         print(f"Animation output file: {args.output_file}")
@@ -62,9 +59,15 @@ def main():
     if args.save_array:
         print(f"Array output file: {args.save_array}")
     
-    # Create dataset to get vocab info
+    # Create dataset to get vocab and token grid info
     dataset = instantiate_from_config(config.dataset)
     vocab_size = dataset.vocab_size
+    token_h, token_w = dataset.image_shape
+    if token_h != token_w:
+        raise ValueError(f"Token grid must be square, got {token_h}x{token_w}")
+    if args.size is None:
+        args.size = token_h
+    print(f"Token grid size: {args.size}x{args.size}")
     
     # Update config with actual vocab size
     config.ar_model.params.vocab_size = vocab_size
@@ -80,7 +83,6 @@ def main():
         
         # Handle both single checkpoint file and accelerate checkpoint directory
         if os.path.isdir(args.gpt_ckpt):
-            # Accelerate checkpoint directory
             mixed_precision = "no" if args.device == "cpu" else "bf16"
             accelerator = Accelerator(mixed_precision=mixed_precision)
             model = accelerator.prepare(model)
@@ -88,17 +90,12 @@ def main():
             model = accelerator.unwrap_model(model)
             model = model.to(device)
         else:
-            # Single checkpoint file
             ckpt = torch.load(args.gpt_ckpt, map_location=device)
-            if 'model' in ckpt:
-                state_dict = ckpt['model']
-            else:
-                state_dict = ckpt
+            state_dict = ckpt['model'] if 'model' in ckpt else ckpt
             model.load_state_dict(state_dict)
         
         print("Checkpoint loaded successfully!")
     
-    # Ensure model is fully on the target device
     model = model.to(device)
     model.eval()
     for param in model.parameters():
@@ -120,15 +117,16 @@ def main():
     all_samples[0] = current_images.cpu()
     
     # Create frames list for animation (all chains)
-    all_frames = []  # List of lists: all_frames[chain_idx][time_step]
+    all_frames = []
     for chain_idx in range(n_chains):
         frames = []
-        frames.append(NLCDTokenizer.nlcd_to_rgb((current_images[chain_idx].cpu().numpy() + 1)))
+        token_grid = current_images[chain_idx].cpu().numpy()
+        raw_img = detokenize(token_grid, dataset.decode_table)
+        frames.append(NLCDTokenizer.nlcd_to_rgb(raw_img))
         all_frames.append(frames)
     
     print("Starting Gibbs sampling...")
     
-    # Main Gibbs sampling loop
     cond = torch.tensor([0], dtype=torch.long, device=device)  # Dummy condition
     
     for step in tqdm(range(args.t), desc="Gibbs sampling"):
@@ -166,9 +164,11 @@ def main():
             all_samples[step + 1] = current_images.cpu()
             
             # Add frames for animation (all chains) - only every frame_interval steps
-            if step % args.frame_interval == 0 or step == args.t - 1:  # Always save last frame too
+            if step % args.frame_interval == 0 or step == args.t - 1:
                 for chain_idx in range(n_chains):
-                    all_frames[chain_idx].append(NLCDTokenizer.nlcd_to_rgb((current_images[chain_idx].cpu().numpy())))
+                    token_grid = current_images[chain_idx].cpu().numpy()
+                    raw_img = detokenize(token_grid, dataset.decode_table)
+                    all_frames[chain_idx].append(NLCDTokenizer.nlcd_to_rgb(raw_img))
     
     print(f"Gibbs sampling complete. Generated {len(all_frames[0])} frames per chain (every {args.frame_interval} steps).")
     print(f"Sample array shape: {all_samples.shape} (T, N, H, W)")
@@ -196,12 +196,12 @@ def main():
         
         # Calculate grid layout for chains
         import math
-        n_cols = min(n_chains, 4)  # Max 4 columns
+        n_cols = min(n_chains, 4)
         n_rows = math.ceil(n_chains / n_cols)
         
         # Calculate figure size
-        fig_width = n_cols * 4  # 4 inches per column
-        fig_height = n_rows * 4  # 4 inches per row
+        fig_width = n_cols * 4
+        fig_height = n_rows * 4
         
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
         fig.patch.set_facecolor('black')

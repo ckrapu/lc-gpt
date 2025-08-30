@@ -18,13 +18,14 @@ from accelerate import Accelerator
 from omegaconf import OmegaConf
 from RandAR.utils import instantiate_from_config
 from RandAR.model.nlcd_tokenizer import NLCDTokenizer
+from RandAR.dataset.nlcd_dataset import detokenize
 
 
 @dataclass
 class Config:
-    config_path: str = "configs/randar_nlcd_32.yaml"
-    gpt_ckpt: str = "results_nlcd_32/randar_nlcd_32/checkpoints/final"
-    data_path: str = "data/data_32.npz"
+    config_path: str = "configs/randar_nlcd_128_large.yaml"
+    gpt_ckpt: str = "results/randar_nlcd_128_large/checkpoints/final"
+    data_path: str = "data/data_128_final.npz"
     device: str = "cpu"
     n_embeddings: int = 1000
     umap_n_neighbors: int = 15
@@ -33,7 +34,7 @@ class Config:
     n_clusters: int = 8
     seed: int = 42
     output_file: str = "results/visualizations/embedding_space_viz.png"
-    size: int = 32
+    size: int = 64
 
 
 def get_model_embeddings(model, dataset, device, n_samples=100, seed=42):
@@ -50,10 +51,12 @@ def get_model_embeddings(model, dataset, device, n_samples=100, seed=42):
         for i in tqdm(indices, desc="Extracting embeddings"):
             tokens, label, _ = dataset[i]
             
-            lulc_img = tokens.reshape(dataset.data[i].shape)
-            lulc_images.append(dataset.data[i])
+            token_h, token_w = dataset.image_shape
+            token_grid = tokens.reshape(token_h, token_w).cpu().numpy()
+            raw_img = detokenize(token_grid, dataset.decode_table)
+            lulc_images.append(raw_img)
             
-            unique_vals, counts = np.unique(dataset.data[i], return_counts=True)
+            unique_vals, counts = np.unique(raw_img, return_counts=True)
             dominant_class = unique_vals[np.argmax(counts)]
             dominant_classes.append(dominant_class)
             
@@ -106,12 +109,12 @@ def get_model_embeddings(model, dataset, device, n_samples=100, seed=42):
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize embedding space of RandAR model")
-    parser.add_argument("--config", type=str, default="configs/randar_nlcd_32.yaml")
-    parser.add_argument("--gpt-ckpt", type=str, default="results_nlcd_32/randar_nlcd_32/checkpoints/final")
-    parser.add_argument("--data-path", type=str, default="data/data_32.npz")
+    parser.add_argument("--config", type=str, default="configs/randar_nlcd_128_large.yaml")
+    parser.add_argument("--gpt-ckpt", type=str, default="results/randar_nlcd_128_large/checkpoints/final")
+    parser.add_argument("--data-path", type=str, default="data/data_128_final.npz")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--n-embeddings", type=int, default=100)
-    parser.add_argument("--output-file", type=str, default="embedding_space_viz.png")
+    parser.add_argument("--output-file", type=str, default="results/visualizations/embedding_space_viz.png")
     args = parser.parse_args()
     
     config = Config(
@@ -174,8 +177,6 @@ def main():
             global_idx = np.where(cluster_mask)[0][closest_idx]
             centroid_indices.append(global_idx)
     
-    tokenizer = NLCDTokenizer(vocab_size=dataset.vocab_size)
-    
     fig = plt.figure()
     gs = gridspec.GridSpec(4, 5, width_ratios=[1, 1, 1, 1, 1], height_ratios=[1, 1, 1, 1])
     
@@ -185,18 +186,15 @@ def main():
     # Use the same NLCD colormap for the scatter points
     point_colors = []
     for dom_class in dominant_classes:
-        # Map data value to NLCD LUT key
-        lut_key = tokenizer.data_to_lut.get(dom_class, 11)  # Default to water if not found
-        rgb = tokenizer.lut[lut_key]
+        # Map NLCD raw class to NLCD LUT key
+        lut_key = dom_class if dom_class in NLCDTokenizer.lut else 11
+        rgb = NLCDTokenizer.lut[lut_key]
         point_colors.append(rgb)
     
     ax_main.scatter(embedding_2d[:, 0], embedding_2d[:, 1], c=point_colors, s=15, alpha=0.5)
     
     for idx, centroid_idx in enumerate(centroid_indices[:8]):
         x, y = embedding_2d[centroid_idx]
-        # circle = plt.Circle((x, y), 0.04 * (embedding_2d[:, 0].max() - embedding_2d[:, 0].min()), 
-        #                    color='black', fill=False, zorder=10)
-        # ax_main.add_patch(circle)
         ax_main.text(x, y, str(idx + 1), color='black', fontsize=12, ha='center', va='center', 
                     weight='bold', zorder=11,
                     bbox=dict(boxstyle='circle,pad=0.15', facecolor='white', alpha=0.5, 
@@ -211,8 +209,8 @@ def main():
             ax = fig.add_subplot(gs[3, i])
             centroid_idx = centroid_indices[i]
             
-            img = lulc_images[centroid_idx]
-            img_rgb = NLCDTokenizer.nlcd_to_rgb(img)
+            img_raw = lulc_images[centroid_idx]
+            img_rgb = NLCDTokenizer.nlcd_to_rgb(img_raw)
             
             ax.imshow(img_rgb)
             ax.axis('off')
@@ -228,8 +226,8 @@ def main():
             ax = fig.add_subplot(gs[i, 4])
             centroid_idx = centroid_indices[plot_idx]
             
-            img = lulc_images[centroid_idx]
-            img_rgb = NLCDTokenizer.nlcd_to_rgb(img)
+            img_raw = lulc_images[centroid_idx]
+            img_rgb = NLCDTokenizer.nlcd_to_rgb(img_raw)
             
             ax.imshow(img_rgb)
             ax.axis('off')

@@ -14,7 +14,7 @@ from omegaconf import OmegaConf
 from RandAR.utils import instantiate_from_config
 
 
-def calculate_perplexity(model, tokenizer, data_loader, device, num_samples=None):
+def calculate_perplexity(model, data_loader, device, num_samples=None):
     """Calculate perplexity of the model on the given dataset."""
     model.eval()
     total_loss = 0.0
@@ -61,9 +61,12 @@ def main(args):
     # Create dataset
     dataset = instantiate_from_config(config.dataset)
     
+    # Update config with actual vocab size
+    if hasattr(config, 'ar_model') and hasattr(config.ar_model, 'params'):
+        config.ar_model.params.vocab_size = dataset.vocab_size
+    
     # Limit dataset size if specified
     if args.n is not None:
-        # Create a subset of the dataset
         subset_indices = list(range(min(args.n, len(dataset))))
         dataset = torch.utils.data.Subset(dataset, subset_indices)
     
@@ -87,46 +90,32 @@ def main(args):
     if args.gpt_ckpt:
         print(f"Loading checkpoint from: {args.gpt_ckpt}")
         
-        # Handle both single checkpoint file and accelerate checkpoint directory
         if os.path.isdir(args.gpt_ckpt):
-            # Accelerate checkpoint directory
             from accelerate import Accelerator
-            # Use CPU for accelerator if device is CPU
             mixed_precision = "no" if args.device == "cpu" else "bf16"
             accelerator = Accelerator(mixed_precision=mixed_precision)
             model = accelerator.prepare(model)
             accelerator.load_state(args.gpt_ckpt)
             model = accelerator.unwrap_model(model)
-            # Ensure model is on the correct device after unwrapping
             model = model.to(device)
         else:
-            # Single checkpoint file
             ckpt = torch.load(args.gpt_ckpt, map_location=device)
-            if 'model' in ckpt:
-                state_dict = ckpt['model']
-            else:
-                state_dict = ckpt
+            state_dict = ckpt['model'] if 'model' in ckpt else ckpt
             model.load_state_dict(state_dict)
         
         print("Checkpoint loaded successfully!")
     else:
         print("No checkpoint provided, using randomly initialized model.")
     
-    # Ensure model is fully on the target device
     model = model.to(device)
     for param in model.parameters():
         param.data = param.data.to(device)
     
-    # Create tokenizer (not used for loss calculation but needed for compatibility)
-    tokenizer = instantiate_from_config(config.tokenizer).to(device).eval()
-    
-    # Calculate perplexity
     print("Starting perplexity calculation...")
     perplexity, avg_loss, samples_processed = calculate_perplexity(
-        model, tokenizer, data_loader, device, args.n
+        model, data_loader, device, args.n
     )
     
-    # Print results
     print("\n" + "="*50)
     print("PERPLEXITY EVALUATION RESULTS")
     print("="*50)
@@ -135,7 +124,6 @@ def main(args):
     print(f"Perplexity: {perplexity:.4f}")
     print("="*50)
     
-    # Save results to file if specified
     if args.output_file:
         with open(args.output_file, 'w') as f:
             f.write(f"Samples processed: {samples_processed}\n")
