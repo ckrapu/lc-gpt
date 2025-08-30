@@ -62,11 +62,12 @@ class NLCDTokenizer:
         # Pass-through for compatibility
         return x, 0.0
     
-    def nlcd_to_rgb(self, data):
+    @staticmethod
+    def nlcd_to_rgb(data):
         """Convert NLCD data values to RGB image using the colormap.
         
         Args:
-            data: 2D numpy array with NLCD data values (1-16, 0 for ungenerated)
+            data: 2D numpy array with NLCD data values (11 - 95)
             
         Returns:
             RGB image as numpy array of shape (height, width, 3) with values in [0, 1]
@@ -77,7 +78,7 @@ class NLCDTokenizer:
         for i in range(height):
             for j in range(width):
                 data_value = data[i, j]
-                rgb = self.lut[data_value]
+                rgb = NLCDTokenizer.lut[data_value]
                 rgb_img[i, j] = rgb
         return rgb_img
 

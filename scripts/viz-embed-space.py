@@ -103,10 +103,6 @@ def get_model_embeddings(model, dataset, device, n_samples=100, seed=42):
     return np.vstack(embeddings), np.array(lulc_images), np.array(dominant_classes)
 
 
-def nlcd_to_rgb(data):
-    vocab_size = int(data.max()) + 1
-    return NLCDTokenizer(vocab_size=vocab_size).nlcd_to_rgb(data)
-
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize embedding space of RandAR model")
@@ -216,7 +212,7 @@ def main():
             centroid_idx = centroid_indices[i]
             
             img = lulc_images[centroid_idx]
-            img_rgb = nlcd_to_rgb(img)
+            img_rgb = NLCDTokenizer.nlcd_to_rgb(img)
             
             ax.imshow(img_rgb)
             ax.axis('off')
@@ -233,7 +229,7 @@ def main():
             centroid_idx = centroid_indices[plot_idx]
             
             img = lulc_images[centroid_idx]
-            img_rgb = nlcd_to_rgb(img)
+            img_rgb = NLCDTokenizer.nlcd_to_rgb(img)
             
             ax.imshow(img_rgb)
             ax.axis('off')

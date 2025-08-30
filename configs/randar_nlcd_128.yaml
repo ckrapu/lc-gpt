@@ -55,7 +55,7 @@ lr_scheduler:
 
 # training related parameters
 exp_name: "randar_nlcd_128"
-max_iters: 100000  
+max_iters: 1000000  
 global_batch_size: 2
 ema: False
 ema_decay: 0.9999

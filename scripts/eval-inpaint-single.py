@@ -17,11 +17,6 @@ from RandAR.utils.inpainting import generate_inpainting
 from RandAR.model.nlcd_tokenizer import NLCDTokenizer
 
 
-def nlcd_to_rgb(data):
-    """Convert NLCD data values to RGB image using the colormap."""
-    # Determine vocab size from data
-    vocab_size = int(data.max()) + 1
-    return NLCDTokenizer(vocab_size=vocab_size).nlcd_to_rgb(data)
 
 def generate_mask(size, mask_ratio, mask_type="interior", seed=None):
     """Generate a mask for inpainting based on the specified type.
@@ -136,7 +131,7 @@ def visualize_inpainting_samples(model, dataset, device, args):
         
         # Show original image
         real_img = real_tokens.reshape(args.size, args.size).numpy()
-        axes[img_idx, 0].imshow(nlcd_to_rgb(real_img), interpolation='nearest')
+        axes[img_idx, 0].imshow(NLCDTokenizer.nlcd_to_rgb(real_img), interpolation='nearest')
         axes[img_idx, 0].axis('off')
         
         # Generate n_samples_viz inpainted versions
@@ -169,7 +164,7 @@ def visualize_inpainting_samples(model, dataset, device, args):
                     gen_img[row, col] = gen_indices_np[pos]
                 
                 # Show generated image
-                axes[img_idx, j+1].imshow(nlcd_to_rgb(gen_img), interpolation='nearest')
+                axes[img_idx, j+1].imshow(NLCDTokenizer.nlcd_to_rgb(gen_img), interpolation='nearest')
                 axes[img_idx, j+1].axis('off')
 
     

@@ -25,7 +25,7 @@ GPU_LIST=$(seq -s, 0 $((NUM_GPUS-1)))
 # NCCL Settings for RTX A5000 GPUs
 export NCCL_DEBUG=INFO
 export NCCL_TIMEOUT=1800  # Increase timeout to 30 minutes (from default 10 minutes)
-export NCCL_P2P_DISABLE=1  # Disable P2P for consumer GPUs like RTX A5000
+export NCCL_P2P_DISABLE=0  # Disable P2P for consumer GPUs like RTX A5000
 export NCCL_IB_DISABLE=0   # Disable InfiniBand if not available
 export CUDA_VISIBLE_DEVICES=$GPU_LIST  # Set GPUs dynamically
 

@@ -41,7 +41,7 @@ class AuxiliaryEmbedder(nn.Module):
         
     def forward(self, aux, train=False):
         # Check if aux is all zeros (no auxiliary data)
-        if torch.all(aux == 0):
+        if torch.all(aux == 0) or aux is None or torch.all(aux == 0.0):
             # Return zeros with proper shape
             batch_size = aux.shape[0]
             return torch.zeros(batch_size, self.output_dim, device=aux.device, dtype=aux.dtype)

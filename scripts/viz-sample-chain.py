@@ -15,13 +15,10 @@ from accelerate import Accelerator
 from omegaconf import OmegaConf
 from RandAR.utils import instantiate_from_config
 from RandAR.utils.inpainting import generate_inpainting
+from RandAR.model.nlcd_tokenizer import NLCDTokenizer
 
 plt.style.use('dark_background')
 
-def nlcd_to_rgb(data):
-    """Convert NLCD data values to RGB image using the colormap."""
-    from RandAR.model.nlcd_tokenizer import NLCDTokenizer
-    return NLCDTokenizer().nlcd_to_rgb(data)
 
 def main():
     parser = argparse.ArgumentParser(description="Create Markov chain sampling animation using RandAR model")
@@ -126,7 +123,7 @@ def main():
     all_frames = []  # List of lists: all_frames[chain_idx][time_step]
     for chain_idx in range(n_chains):
         frames = []
-        frames.append(nlcd_to_rgb((current_images[chain_idx].cpu().numpy() + 1)))
+        frames.append(NLCDTokenizer.nlcd_to_rgb((current_images[chain_idx].cpu().numpy() + 1)))
         all_frames.append(frames)
     
     print("Starting Gibbs sampling...")
@@ -171,7 +168,7 @@ def main():
             # Add frames for animation (all chains) - only every frame_interval steps
             if step % args.frame_interval == 0 or step == args.t - 1:  # Always save last frame too
                 for chain_idx in range(n_chains):
-                    all_frames[chain_idx].append(nlcd_to_rgb((current_images[chain_idx].cpu().numpy())))
+                    all_frames[chain_idx].append(NLCDTokenizer.nlcd_to_rgb((current_images[chain_idx].cpu().numpy())))
     
     print(f"Gibbs sampling complete. Generated {len(all_frames[0])} frames per chain (every {args.frame_interval} steps).")
     print(f"Sample array shape: {all_samples.shape} (T, N, H, W)")
