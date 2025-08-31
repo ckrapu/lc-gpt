@@ -25,13 +25,16 @@ from .llamagen_gpt import LabelEmbedder, CaptionEmbedder, MLP, RMSNorm, \
 
 
 class AuxiliaryEmbedder(nn.Module):
-    """Embeds auxiliary features with normalization and optional dropout."""
+    """Embeds auxiliary features with normalization and optional dropout.
+       Supports either [B, A] (global) or [B, L, A] (per-token) inputs.
+    """
     
-    def __init__(self, aux_dim, hidden_dim, output_dim, dropout_prob=0.1):
+    def __init__(self, aux_dim, hidden_dim, output_dim, dropout_prob=0.1, mode="token"):
         super().__init__()
         self.aux_dim = aux_dim
         self.output_dim = output_dim
         self.dropout_prob = dropout_prob
+        self.mode = mode  # "token" or "sample"
         
         # Shallow MLP for processing auxiliary features
         self.mlp = MLP(aux_dim, hidden_dim, output_dim)
@@ -40,26 +43,42 @@ class AuxiliaryEmbedder(nn.Module):
         self.scale = nn.Parameter(torch.ones(1) * 0.1)
         
     def forward(self, aux, train=False):
-        # Check if aux is all zeros (no auxiliary data)
-        if torch.all(aux == 0) or aux is None or torch.all(aux == 0.0):
-            # Return zeros with proper shape
-            batch_size = aux.shape[0]
-            return torch.zeros(batch_size, self.output_dim, device=aux.device, dtype=aux.dtype)
-        
-        # Apply dropout during training for robustness
-        if train and self.dropout_prob > 0:
-            drop_mask = torch.rand(aux.shape[0], device=aux.device) < self.dropout_prob
-            aux = torch.where(drop_mask.unsqueeze(-1), torch.zeros_like(aux), aux)
-        
-        # Process through MLP
-        embeddings = self.mlp(aux)
-        
-        # Normalize to unit sphere
+        if aux is None:
+            return None
+
+        is_per_token = (aux.dim() == 3)
+
+        # If aux is all zeros, return zero embeddings directly to avoid bias
+        if torch.all(aux == 0) or torch.all(aux == 0.0):
+            if is_per_token:
+                return torch.zeros(aux.shape[0], aux.shape[1], self.output_dim, device=aux.device, dtype=aux.dtype)
+            else:
+                return torch.zeros(aux.shape[0], self.output_dim, device=aux.device, dtype=aux.dtype)
+
+        # Flatten to feed MLP
+        aux_flat = aux.view(-1, aux.shape[-1])  # [B*L, A] or [B, A]
+        embeddings = self.mlp(aux_flat)
+
+        # Normalize to unit sphere and scale
         embeddings = F.normalize(embeddings, p=2, dim=-1)
-        
-        # Apply learnable scaling
         embeddings = self.scale * embeddings
-        
+
+        # Reshape back
+        if is_per_token:
+            embeddings = embeddings.view(aux.shape[0], aux.shape[1], self.output_dim)  # [B, L, D]
+        else:
+            embeddings = embeddings.view(aux.shape[0], self.output_dim)  # [B, D]
+
+        # Apply dropout in embedding space
+        if train and self.dropout_prob > 0:
+            if is_per_token and self.mode == "token":
+                mask = (torch.rand(embeddings.shape[0], embeddings.shape[1], device=embeddings.device) >= self.dropout_prob).unsqueeze(-1).type_as(embeddings)
+            else:
+                mask = (torch.rand(embeddings.shape[0], 1, device=embeddings.device) >= self.dropout_prob).type_as(embeddings)
+                if is_per_token:
+                    mask = mask.unsqueeze(1)
+            embeddings = embeddings * mask
+
         return embeddings
 
 
@@ -444,13 +463,23 @@ class RandARTransformer(nn.Module):
             :, : self.cls_token_num
         ] # [bsz, cls_token_num, dim]
 
-        token_embeddings = self.tok_embeddings(idx)
+        token_embeddings = self.tok_embeddings(idx)  # [bsz, seq_len, dim]
         
-        # Add auxiliary embeddings to token embeddings (not position tokens)
+        # Add auxiliary embeddings to token embeddings (per-token and/or per-sample)
         if self.aux_embedding is not None and aux is not None:
-            aux_emb = self.aux_embedding(aux, train=self.training)
-            # Add to all token embeddings in the sequence
-            token_embeddings = token_embeddings + aux_emb.unsqueeze(1)
+            if aux.dim() == 3:
+                # aux expected [bsz, seq_len, aux_dim]; align to token order
+                aux = torch.gather(
+                    aux,
+                    1,
+                    token_order.unsqueeze(-1).expand(-1, -1, aux.shape[-1])
+                ).contiguous()
+                aux_emb = self.aux_embedding(aux, train=self.training)  # [bsz, seq_len, dim]
+                token_embeddings = token_embeddings + aux_emb
+            else:
+                # backward-compat: single vector per sample
+                aux_emb = self.aux_embedding(aux, train=self.training)  # [bsz, dim]
+                token_embeddings = token_embeddings + aux_emb.unsqueeze(1)
         
         token_embeddings = self.tok_dropout(token_embeddings) # [bsz, seq_len, dim]
         position_instruction_tokens = self.get_position_instruction_tokens(token_order) # [bsz, seq_len, dim]
@@ -590,16 +619,26 @@ class RandARTransformer(nn.Module):
         else:
             assert token_order.shape == (bs, self.block_size)
         
+        # Reorder aux to match generation order (per-token)
+        aux_reordered = None
+        if self.aux_embedding is not None and aux is not None:
+            if aux.dim() == 3:
+                # aux expected [B, L, A] in raster order (L=block_size)
+                aux_reordered = torch.gather(
+                    aux,
+                    1,
+                    token_order.unsqueeze(-1).expand(-1, -1, aux.shape[-1])
+                ).contiguous()  # [B, L, A]
+            else:
+                # backward-compat: single vector per sample
+                aux_reordered = aux  # [B, A]
+        
         result_indices = torch.zeros((bs, self.block_size), dtype=torch.long, device=cond.device) - 1
         
         # Step-2: Prepare the freqs_cis and position_instruction_tokens
         position_instruction_tokens = self.get_position_instruction_tokens(token_order)
         img_token_freq_cis = self.freqs_cis[self.cls_token_num:].clone().to(token_order.device)[token_order]
         
-        # Prepare auxiliary embedding if provided
-        aux_emb = None
-        if self.aux_embedding is not None and aux is not None:
-            aux_emb = self.aux_embedding(aux, train=False)
 
         # Step-3: Prepare CFG
         if cfg_scales[-1] > 1.0:
@@ -607,6 +646,8 @@ class RandARTransformer(nn.Module):
             cond_combined = torch.cat([cond, cond_null])
             img_token_freq_cis = torch.cat([img_token_freq_cis, img_token_freq_cis])
             position_instruction_tokens = torch.cat([position_instruction_tokens, position_instruction_tokens])
+            if aux_reordered is not None:
+                aux_reordered = torch.cat([aux_reordered, aux_reordered], dim=0)
             bs *= 2
         else:
             cond_combined = cond
@@ -658,9 +699,16 @@ class RandARTransformer(nn.Module):
             
             img_tokens = self.tok_embeddings(indices)
             
-            # Add auxiliary embeddings to generated tokens if available
-            if aux_emb is not None:
-                img_tokens = img_tokens + aux_emb.unsqueeze(1)
+            # Add auxiliary embeddings to generated tokens if available (per-token or per-sample)
+            if aux_reordered is not None:
+                if aux_reordered.dim() == 3:
+                    cur_aux = aux_reordered[
+                        :, query_token_idx_cur_step : query_token_idx_cur_step + num_query_token_cur_step, :
+                    ]  # [B, num_query, A]
+                else:
+                    cur_aux = aux_reordered.unsqueeze(1).expand(-1, num_query_token_cur_step, -1)  # [B, num_query, A]
+                aux_tok = self.aux_embedding(cur_aux, train=False)  # [B, num_query, D]
+                img_tokens = img_tokens + aux_tok
             
             if cfg_scales[-1] > 1.0:
                 img_tokens = torch.cat([img_tokens, img_tokens], dim=0)

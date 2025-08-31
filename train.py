@@ -45,6 +45,7 @@ def calculate_perplexity(model, data_loader, device, num_samples=500):
                 break
                 
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+            aux = aux.to(device, non_blocking=True)
             image_tokens = x  # Already flattened in dataset
             cond = y.reshape(-1)
             

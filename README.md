@@ -10,6 +10,7 @@ To use this codebase, follow these steps:
 - Download the required land cover data file `nlcd_2021_land_cover_l48_20230630.img` from [here](https://www.usgs.gov/centers/eros/news/nlcd-2021-now-available) and place it in the `data/` directory
 - (Optionally) set your `AWS_ACCESS_KEY_ID` and  `AWS_SECRET_ACCESS_KEY` environment variables to back up processed data and model artifacts to AWS s3
 - Run the script located at `scripts/prep-dataset.ipynb` to produce a dataset in `npz` format in the `data` directory
+- To produce a multiresolution dataset, run `sh scripts/prep-dataset-multiple-resolution.sh` to run the previous script over multiple spatial resolutions.
 - Make sure the dataset path is correctly specified in its config (YAML file located in `configs`)
 - Train the model using `accelerate launch train.py --config configs/randar_nlcd_32.yaml`. During training, visualization results are saved in the `results/` folder. 
   - The `gen_*.png` images show new images generated entirely from scratch.
@@ -32,26 +33,17 @@ The `scripts/prep-dataset.ipynb` notebook implements the data cleaning pipeline.
 
 The required input files are: `nlcd_2021_land_cover_l48_20230630.img`, the National Land Cover Database raster covering the continental US and optionally the SRTM elevation tiles downloaded via `elevation` in `scripts/prep-dataset.ipynb`. This script produces `.npz` files named like `data_XX.npz` where `XX` is the resolution of the data produced by the pipeline. This file has the following key/value pairs:
 
-  - `train_data`: Training samples array with shape `(N_train, 2, XX, XX)`
-  - `test_data`: Test samples array with shape `(N_test, 2, XX, XX)`
-  - `train_coords`: Longitude/latitude coordinates of training samples with shape `(N_train, 2)`
-  - `test_coords`: Longitude/latitude coordinates of test samples with shape `(N_test, 2)`
-  - `decode_table`
-
-### Combined multi-resolution dataset format
-The script `scripts/combine-datasets.py` produces a combined `.npz` with the following keys:
-
-  - `train_data`: Concatenated training samples, shape `(N_train, C, H, W)`
+  - `train_data`: Concatenated training samples, shape `(N_train, C, H, W)`. Pixel values are integers for NLCD classes (ex: 11, 45, 95)
   - `test_data`: Concatenated test samples, shape `(N_test, C, H, W)`
   - `train_coords`: Concatenated training sample coordinates, shape `(N_train, 2)`
   - `test_coords`: Concatenated test sample coordinates, shape `(N_test, 2)`
-  - `train_data_tokenized`: Tokenized land cover channel using a unified decode table; tokens correspond to D×D patches. Shape `(N_train, H//D, W//D)`
+  - `train_data_tokenized`: Tokenized land cover channel using a unified decode table; tokens correspond to D×D patches. Shape `(N_train, H//D, W//D)`. Pixel values typically range from 0 to 50000, depending on the tokenizer vocab size.
   - `test_data_tokenized`: Tokenized land cover channel for test set. Shape `(N_test, H//D, W//D)`
   - `decode_table`: Unified token decode table mapping token index → D×D patch. Shape `(T, D, D)`
   - `train_label`: Integer label per training sample indicating the downsample ratio used to create it. Shape `(N_train,)`
   - `test_label`: Integer label per test sample indicating the downsample ratio. Shape `(N_test,)`
-  - `train_aux`: Auxiliary features for training samples. If not present in source datasets, zeros are used. Shape `(N_train, 2)`
-  - `test_aux`: Auxiliary features for test samples. If not present in source datasets, zeros are used. Shape `(N_test, 2)`
+  - `train_aux`: Per-token auxiliary features aligned with the token grid. Shape `(N_train, H//D, W//D, A)`; when loaded for training, typically flattened to `(N_train, L, A)` with `L = (H//D)*(W//D)`.
+  - `test_aux`: Same as `train_aux` for the test set.
 
 Notes:
 

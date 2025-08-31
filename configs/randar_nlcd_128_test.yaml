@@ -1,0 +1,80 @@
+ar_model:
+  target: RandAR.model.randar_gpt.RandARTransformer
+  params:
+    n_layer: 3      
+    n_head: 8         
+    dim: 256          
+    model_type: c2i
+    vocab_size: 49928 
+    block_size: 4096    
+    num_classes: 5    # Single dummy class for now
+    cls_token_num: 1
+    resid_dropout_p: 0.1
+    ffn_dropout_p: 0.1
+    drop_path_rate: 0.0
+    token_dropout_p: 0.0
+    position_order: random
+    grad_checkpointing: False
+    zero_class_qk: True
+    num_inference_steps: 32  
+    aux_dim: 2  # Dimension of auxiliary input features
+    aux_embed_dim: 256  # Should match dim parameter
+    aux_dropout_prob: 0.1  # Dropout for robustness
+
+
+dataset:
+  target: RandAR.dataset.nlcd_dataset.NLCDDataset
+  params:
+    data_path: "data/data_size128_ratio2_testing.npz"
+    split: train
+    max_samples: 3000000
+tokenizer:
+  target: RandAR.model.nlcd_tokenizer.NLCDTokenizer
+  params:
+    vocab_size: 2303
+
+accelerator:
+  gradient_accumulation_steps: 1
+  mixed_precision: "no"
+  log_with: wandb
+
+optimizer:
+  lr: 0.0005
+  weight_decay: 0.01
+  beta1: 0.9
+  beta2: 0.95
+  max_grad_norm: 1.0
+  skip_grad_iter: 0
+  skip_grad_norm: 1000
+
+lr_scheduler:
+  type: cosine
+  warm_up_iters: 500
+  min_lr_ratio: 0.1
+  num_cycles: 0.5
+
+# training related parameters
+exp_name: "randar_nlcd_128_test"
+max_iters: 1000000  
+global_batch_size: 2
+ema: False
+ema_decay: 0.9999
+
+num_workers: 4
+log_every: 1000
+ckpt_every: 10000
+visualize_every: 1000
+eval_pplx_every: 5000
+keep_last_k: 2
+resume_from: "results/randar_nlcd_128_test/checkpoints/final"
+global_seed: 42
+
+results_dir: "results/" 
+gpt_ckpt: None
+
+# for eval fid:
+vq_ckpt: None  # Not needed
+
+# for wandb
+wandb_entity: "ckrapu"
+wandb_offline: False  # Run offline for testing 
