@@ -1,4 +1,4 @@
-![Banner](banner.gif)
+![samples](samples.png)
 
 # GPT Modeling for Land Use / Land Cover
 
@@ -42,7 +42,7 @@ The code below uses a script to produce an animation of a new NLCD image being c
 ```
 python3 scripts/nlcd_animation.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final --output-file generation_2x2.gif --device cuda --nrows 2 --ncols 2 --size 32
 ```
-![samples](samples.png)
+
 
 
 ## Scripts
