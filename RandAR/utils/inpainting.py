@@ -2,7 +2,7 @@ import torch
 from typing import Tuple
 from RandAR.model.generate import sample
 import numpy as np
-
+from tqdm import trange
 
 def inpaint_from_arr(
         model,
@@ -197,7 +197,7 @@ def generate_inpainting(model,
     # Generate unknown tokens one by one
     generated_tokens = []
     
-    for step in range(num_unknown):
+    for step in trange(num_unknown):
         # Add the position instruction token for the next unknown token
         next_pos_token = position_instruction_tokens[:, num_known + step:num_known + step + 1]
         next_pos_freqs = token_freqs_cis[:, num_known + step:num_known + step + 1]
