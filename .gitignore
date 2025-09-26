@@ -63,3 +63,5 @@ wandb/
 
 data/split_16.gpkg
 *papermill.ipynb
+*hierarchical-case-study.ipynb
+*hierarchical-case-study-v2.ipynb

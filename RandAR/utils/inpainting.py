@@ -1,5 +1,5 @@
 import torch
-from typing import Tuple
+from typing import Optional, Sequence, Tuple
 from RandAR.model.generate import sample
 import numpy as np
 from tqdm import trange
@@ -106,6 +106,7 @@ def generate_inpainting(model,
                        top_p: float = 1.0,
                        disallowed_classes=None,
                        logit_bias=None,
+                       allowed_token_ids_per_position: Optional[Sequence[Optional[torch.Tensor]]] = None,
 ):
     """
     Custom inpainting generation following RandAR approach.
@@ -120,6 +121,11 @@ def generate_inpainting(model,
         temperature: Sampling temperature
         top_k: Top-k sampling
         top_p: Top-p sampling
+        disallowed_classes: optional mask of token ids that should never be sampled
+        logit_bias: additive bias to logits (same semantics as before)
+        allowed_token_ids_per_position: optional sequence where each entry supplies
+            the token ids permitted at the corresponding unknown position; entries
+            set to None keep the default (all tokens allowed)
     
     Returns:
         torch.Tensor: Generated indices in raster (spatial) order [bs, block_size]
@@ -142,6 +148,9 @@ def generate_inpainting(model,
     num_known = len(known_positions)
     num_unknown = len(unknown_positions)
     total_tokens = num_known + num_unknown
+
+    if allowed_token_ids_per_position is not None and len(allowed_token_ids_per_position) != num_unknown:
+        raise ValueError("allowed_token_ids_per_position must match number of unknown positions")
     
     # Create token order tensor
     token_order = all_positions.unsqueeze(0).repeat(bs, 1)
@@ -224,7 +233,27 @@ def generate_inpainting(model,
         # If disallowed_classes is provided, set the logits of the disallowed classes to -inf. Recall that logits has shape (bs, 1, vocab_size)
         if disallowed_classes is not None:
             logits[..., disallowed_classes] = -float('inf')
-        
+
+        if allowed_token_ids_per_position is not None:
+            allowed_ids = allowed_token_ids_per_position[step]
+            if allowed_ids is not None:
+                if not torch.is_tensor(allowed_ids):
+                    allowed_ids = torch.as_tensor(allowed_ids, dtype=torch.long, device=device)
+                elif allowed_ids.device != device:
+                    allowed_ids = allowed_ids.to(device)
+
+                if allowed_ids.numel() == 0:
+                    allowed_ids = None
+                else:
+                    # Ensure at least one finite logit remains after masking; if not, skip constraints.
+                    finite_allowed = torch.isfinite(logits[..., allowed_ids]).any()
+                    if finite_allowed:
+                        vocab_mask = torch.ones(logits.shape[-1], dtype=torch.bool, device=device)
+                        vocab_mask[allowed_ids] = False
+                        logits[..., vocab_mask] = -float('inf')
+                    else:
+                        allowed_ids = None
+
         # Sample from the last position
         next_token = sample(logits[:, -1:], temperature=temperature, top_k=top_k, top_p=top_p)[0]
         generated_tokens.append(next_token.item())
@@ -247,4 +276,4 @@ def generate_inpainting(model,
     result_indices_raster[all_positions] = result_indices_gen_order
     
     model.remove_caches()
-    return result_indices_raster.unsqueeze(0)  # Add batch dimension 
+    return result_indices_raster.unsqueeze(0)  # Add batch dimension
