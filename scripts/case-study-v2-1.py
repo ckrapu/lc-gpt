@@ -14,17 +14,21 @@ This version improves on its predecessor by using a multiresolution inference sc
 from dataclasses import dataclass, field
 from pathlib import Path
 import logging
-import os
+import shutil
+from datetime import datetime
 import sys
 import numpy as np
 import torch
 import rasterio
-from rasterio.transform import Affine
+from rasterio.transform import Affine, array_bounds
 import rasterio.windows
 import matplotlib.pyplot as plt
 import geopandas as gpd
 from rasterio.features import rasterize as rio_rasterize
+from rasterio.warp import Resampling, calculate_default_transform, reproject
 from omegaconf import OmegaConf
+from typing import Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 sys.path.append("./")
 from RandAR.utils import instantiate_from_config
@@ -42,8 +46,8 @@ class Config:
     data_npz: str = "data/data_128_final.npz"  # for decode_table
     geojson_dir: str = "data/inpaint_regions"
     nlcd_img_path: str = "data/nlcd_2021_land_cover_l48_20230630.img"  # open .img (has .ige sidecar)
-    output_dir: str = "results/case_study_v2"
-    rasters_dir: str = output_dir + "/output_rasters"
+    case_study_root: str = "results/case_study"
+
 
     # Cases - list of bases to process (resolution will be calculated dynamically)
     bases: list = field(default_factory=lambda: [
@@ -67,7 +71,6 @@ class Config:
     forbidden_nlcd: tuple[int, ...] = (11, 12, 90, 95)  # water/wetlands
     
     # Multiresolution parameters
-    multiresolution: bool = True
     max_mask_ratio_coarse: float = 0.35  # Max mask coverage for coarsest resolution
     max_mask_ratio_fine: float = 0.70  # Max mask coverage for finer resolutions
     min_filled_ratio: float = 0.65  # Min ratio of filled pixels for window selection
@@ -77,6 +80,34 @@ class Config:
     test_mode: bool = False  # If True, use random tokens instead of model inference
     samples_per_base: int = 3 if test_mode else 10
 
+
+class ResolutionLevel(BaseModel):
+    resolution_m: int
+    mask_ratio: float
+
+    model_config = ConfigDict(frozen=True)
+
+
+class ResolutionHierarchy(BaseModel):
+    base: str
+    levels: list[ResolutionLevel]
+    transforms: dict[int, Affine] = Field(default_factory=dict)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def finest_resolution(self) -> int:
+        return self.levels[-1].resolution_m
+
+
+class SampledData(BaseModel):
+    base: str
+    resolution_m: int
+    raw: np.ndarray
+    mask: np.ndarray
+    samples: list[np.ndarray]
+    profile: dict
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 def setup_logger():
@@ -95,6 +126,7 @@ def load_decode_table(npz_path: Path) -> np.ndarray:
 
 def compute_disallowed_token_indices(decode_table: np.ndarray,
                                      forbidden_nlcd: tuple[int, ...]) -> np.ndarray:
+
     flat = decode_table.reshape(decode_table.shape[0], -1)
     mask = np.isin(flat, np.array(forbidden_nlcd, dtype=flat.dtype)).any(axis=1)
     idx = np.where(mask)[0].astype(np.int64)
@@ -103,6 +135,12 @@ def compute_disallowed_token_indices(decode_table: np.ndarray,
 
 
 def tokenize_image(raw: np.ndarray, decode_table: np.ndarray) -> np.ndarray:
+    '''
+    Given an input image `raw` of shape (H, W) and all discrete values, this
+    function splits it into D×D patches and finds the exact matching token
+    index from `decode_table` for each patch, returning a flattened array with 
+    the token indices.
+    '''
     # D×D patch per token
     _, D, D2 = decode_table.shape
     assert D == D2, "decode_table must have square patches"
@@ -168,10 +206,12 @@ def coarsen_mask_by_ratio(mask_raw_30m: np.ndarray, ratio: int) -> np.ndarray:
 
 
 def calculate_optimal_resolution(base_name: str, nlcd_img: Path, geojson_dir: Path, 
-                                max_mask_ratio: float = 0.35) -> tuple[int, float]:
+                                max_mask_ratio: float = 0.35, window_size:int = 128) -> tuple[int, float]:
     """
-    Calculate the optimal resolution for a region such that a 128x128 pixel window
-    contains fewer than max_mask_ratio (35%) masked pixels.
+    Calculate the optimal resolution for a region such that a pixel window of size <window_size> x <window_size>
+    contains fewer than max_mask_ratio% masked pixels.
+
+    Starts at high resolution and checks to see if a window centered on the mask centroid can be populated with enough non-masked pixels. If not, zoom out, i.e. move to the next highest resolution.
     Returns a tuple of (resolution in meters, mask ratio at that resolution).
     """
     resolutions = [30, 60, 120, 240, 480, 960]
@@ -263,7 +303,7 @@ def calculate_optimal_resolution(base_name: str, nlcd_img: Path, geojson_dir: Pa
 def select_resolution_hierarchy(base_name: str, nlcd_img: Path, geojson_dir: Path, 
                                max_mask_ratio_coarse: float = 0.35,
                                max_mask_ratio_fine: float = 0.70,
-                               finest_resolution: int = 30) -> list[tuple[int, float]]:
+                               finest_resolution: int = 30) -> ResolutionHierarchy:
     """
     Select a hierarchy of resolutions for multiresolution inpainting.
     Returns list of (resolution, mask_ratio) tuples from coarse to fine.
@@ -414,7 +454,13 @@ def select_resolution_hierarchy(base_name: str, nlcd_img: Path, geojson_dir: Pat
                 logging.info(f"{base_name}: Skipping {res_m}m (mask: {mask_ratio:.2%} > {max_mask_ratio_fine:.0%})")
                 break
     
-    return hierarchy
+    if not hierarchy:
+        raise ValueError(f"No resolutions computed for {base_name}")
+
+    return ResolutionHierarchy(
+        base=base_name,
+        levels=[ResolutionLevel(resolution_m=r, mask_ratio=m) for r, m in hierarchy],
+    )
 
 
 def compute_allowed_tokens_from_coarse(coarse_tokens: np.ndarray, decode_table: np.ndarray, D: int = 2) -> dict:
@@ -549,9 +595,17 @@ def read_from_nlcd_by_geom(base_name: str, nlcd_img: Path, resolution_m: int, ge
         window_expanded = window_expanded.round_offsets().round_lengths()
         raw_30m_large = nlcd.read(1, window=window_expanded, boundless=True, fill_value=0)
         
-        # Now extract a 128x128 pixel region (at coarse resolution) centered on the mask
-        # 128 pixels at coarse resolution = 128 * ratio pixels at 30m
-        target_size_30m = 128 * ratio
+        # Determine how many coarse-resolution tokens are needed to cover the geometry.
+        width_tokens = int(np.ceil(width / float(resolution_m)))
+        height_tokens = int(np.ceil(height / float(resolution_m)))
+
+        # Keep the original 128-token window as a floor and add a small context buffer.
+        min_tokens = 128
+        buffer_tokens = 8
+        target_tokens = max(min_tokens, max(width_tokens, height_tokens) + buffer_tokens)
+
+        # Convert back to 30m pixels (make sure divisible by the ratio).
+        target_size_30m = target_tokens * ratio
         
         # Find center of the mask within the large window
         window_orig = rasterio.windows.from_bounds(*bounds, transform=nlcd.transform)
@@ -564,7 +618,7 @@ def read_from_nlcd_by_geom(base_name: str, nlcd_img: Path, resolution_m: int, ge
         mask_center_x = rel_col + rel_width // 2
         mask_center_y = rel_row + rel_height // 2
         
-        # Extract 128*ratio x 128*ratio window centered on mask
+        # Extract a square window centered on the mask with the requested token footprint
         x_start = max(0, mask_center_x - target_size_30m // 2)
         y_start = max(0, mask_center_y - target_size_30m // 2)
         x_end = min(raw_30m_large.shape[1], x_start + target_size_30m)
@@ -616,7 +670,8 @@ def read_from_nlcd_by_geom(base_name: str, nlcd_img: Path, resolution_m: int, ge
         mask_coarse = coarsen_mask_by_ratio(mask_30m, ratio)
 
         # Build profile for coarse grid
-        coarse_transform = Affine(nlcd.transform.a * ratio, 0, x0, 0, nlcd.transform.e * ratio, y0)
+        pixel_size = float(resolution_m)
+        coarse_transform = Affine(pixel_size, 0, x0, 0, -pixel_size, y0)
         profile = {
             'driver': 'GTiff',
             'height': coarse.shape[0],
@@ -663,15 +718,49 @@ def load_model(cfg: Config) -> torch.nn.Module:
     return model
 
 
-def write_geotiff(path: Path, array: np.ndarray, ref_profile: dict):
+def write_geotiff(path: Path, array: np.ndarray, ref_profile: dict, override_transform: Optional[Affine] = None):
     profile = ref_profile.copy()
+    transform = override_transform or profile.get('transform')
+    if transform is None:
+        raise ValueError("Source transform is required to write GeoTIFF")
+    if isinstance(transform, tuple):
+        transform = Affine(*transform)
+
+    src_crs = profile.get('crs')
+    if src_crs is None:
+        raise ValueError("Source CRS is required to write GeoTIFF")
+
+    src_height, src_width = array.shape
+    left, bottom, right, top = array_bounds(src_height, src_width, transform)
+    dst_crs = "EPSG:3857"
+    dst_transform, dst_width, dst_height = calculate_default_transform(
+        src_crs, dst_crs, src_width, src_height, left, bottom, right, top
+    )
+
+    destination = np.zeros((dst_height, dst_width), dtype=array.dtype)
+    reproject(
+        source=array,
+        destination=destination,
+        src_transform=transform,
+        src_crs=src_crs,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        resampling=Resampling.nearest,
+        num_threads=2,
+    )
+
     profile.update({
         'count': 1,
-        'dtype': array.dtype,
-        'compress': 'deflate'
+        'dtype': destination.dtype,
+        'compress': 'deflate',
+        'transform': dst_transform,
+        'width': dst_width,
+        'height': dst_height,
+        'crs': dst_crs,
     })
+
     with rasterio.open(path, 'w', **profile) as dst:
-        dst.write(array, 1)
+        dst.write(destination, 1)
 
 
 def class_proportions(arr: np.ndarray) -> dict:
@@ -680,7 +769,7 @@ def class_proportions(arr: np.ndarray) -> dict:
     return {int(v): float(c) / float(total) for v, c in zip(vals, counts)}
 
 
-def multiresolution_inpaint(model, hierarchy, base_name, nlcd_img_path, geojson_dir,
+def multiresolution_inpaint(model, plan: ResolutionHierarchy, base_name, nlcd_img_path, geojson_dir,
                            decode_table, disallowed_tokens, cfg, device, sample_idx=0):
     """
     Perform multiresolution inpainting from coarse to fine.
@@ -688,12 +777,21 @@ def multiresolution_inpaint(model, hierarchy, base_name, nlcd_img_path, geojson_
     """
     previous_result = None
     previous_res = None
-    
-    for level_idx, (res_m, mask_ratio) in enumerate(hierarchy):
-        logging.info(f"{base_name} Sample {sample_idx+1}: Level {level_idx+1}/{len(hierarchy)} - Resolution {res_m}m (mask: {mask_ratio:.2%})")
+    total_levels = len(plan.levels)
+
+    for level_idx, level in enumerate(plan.levels):
+        res_m = level.resolution_m
+        mask_ratio = level.mask_ratio
+        logging.info(f"{base_name} Sample {sample_idx+1}: Level {level_idx+1}/{total_levels} - Resolution {res_m}m (mask: {mask_ratio:.2%})")
         
         # Load data at current resolution
         raw, mask_raw, profile = read_from_nlcd_by_geom(base_name, Path(nlcd_img_path), res_m, Path(geojson_dir))
+
+        transform = profile.get('transform')
+        if transform is not None and not isinstance(transform, Affine):
+            transform = Affine(*transform)
+        if transform is not None and res_m not in plan.transforms:
+            plan.transforms[res_m] = transform
         
         # Tokenize
         tokens_grid = tokenize_image(raw, decode_table)
@@ -876,72 +974,54 @@ def main():
     cfg = Config()
     torch.manual_seed(cfg.seed)
 
-    os.makedirs(cfg.output_dir, exist_ok=True)
-    logging.info(f"Using device: {cfg.device} and checkpoint {cfg.ckpt_dir}")
+    run_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    case_root = Path(cfg.case_study_root)
+    run_dir = case_root / f"run-{run_timestamp}"
+    inpaint_dir = run_dir / "inpainted"
+    consensus_dir = run_dir / "consensus"
+    pickle_dir = run_dir / "pickles"
+    figures_dir = run_dir / "figures"
 
-    # Check for all base geometries before loading model
+    for folder in (inpaint_dir, consensus_dir, pickle_dir, figures_dir):
+        folder.mkdir(parents=True, exist_ok=True)
+
+    logging.info(f"Using device: {cfg.device} with checkpoint {cfg.ckpt_dir}. Writing outputs to {run_dir}")
+
     logging.info("Checking availability of all base geometries...")
     missing_bases = []
-    
+
     for base in cfg.bases:
         geojson_path = Path(cfg.geojson_dir) / f"base_{base}.geojson"
-        
+
         if not geojson_path.exists():
             missing_bases.append(base)
             logging.error(f"Base '{base}' GeoJSON not found at {geojson_path}")
         else:
             logging.info(f"Base '{base}' GeoJSON file exists")
-    
+
     if missing_bases:
         logging.error(f"Missing base geometries: {missing_bases}")
         logging.error("Cannot proceed without all base geometries. Please check your data.")
         sys.exit(1)
-    
+
     logging.info(f"Feature geometries for all {len(cfg.bases)} features are available.")
-    
-    # Calculate resolution hierarchy for each base
+
     logging.info("\n" + "="*60)
-    if cfg.multiresolution:
-        logging.info("Calculating multiresolution hierarchies for all regions...")
-    else:
-        logging.info("Calculating optimal resolutions for all regions...")
+    logging.info("Calculating multiresolution hierarchies for all regions...")
+
     logging.info("="*60)
-    
-    base_hierarchies = {}
-    base_resolutions = {}
-    base_mask_ratios = {}
-    
-    for base in cfg.bases:
-        logging.info(f"\nAnalyzing feature '{base}'...")
-        
-        if cfg.multiresolution:
-            hierarchy = select_resolution_hierarchy(
-                base, Path(cfg.nlcd_img_path), Path(cfg.geojson_dir),
-                cfg.max_mask_ratio_coarse, cfg.max_mask_ratio_fine, cfg.finest_resolution
-            )
-            base_hierarchies[base] = hierarchy
-            # Store the coarsest resolution for compatibility
-            base_resolutions[base] = hierarchy[0][0]
-            base_mask_ratios[base] = hierarchy[0][1]
-            logging.info(f"Base '{base}': hierarchy = {[f'{r}m' for r, _ in hierarchy]}")
-        else:
-            optimal_res, mask_ratio = calculate_optimal_resolution(base, Path(cfg.nlcd_img_path), Path(cfg.geojson_dir))
-            base_resolutions[base] = optimal_res
-            base_mask_ratios[base] = mask_ratio
-            base_hierarchies[base] = [(optimal_res, mask_ratio)]
-            logging.info(f"Base '{base}': optimal resolution = {optimal_res}m")
-    
-    logging.info("\n" + "="*60)
+
+    base_hierarchies = {base: select_resolution_hierarchy(
+            base, Path(cfg.nlcd_img_path), Path(cfg.geojson_dir),
+            cfg.max_mask_ratio_coarse, cfg.max_mask_ratio_fine, cfg.finest_resolution)
+        for base in cfg.bases}
+
+
     logging.info("Resolution selection complete. Summary:")
     for base in cfg.bases:
-        if cfg.multiresolution:
-            hierarchy = base_hierarchies[base]
-            res_str = " -> ".join([f"{r}m ({m:.1%})" for r, m in hierarchy])
-            logging.info(f"  {base}: {res_str}")
-        else:
-            res = base_resolutions[base]
-            mask_pct = base_mask_ratios[base] * 100
-            logging.info(f"  {base}: {res}m (mask: {mask_pct:.1f}%)")
+        plan = base_hierarchies[base]
+        res_str = " -> ".join([f"{level.resolution_m}m ({level.mask_ratio:.1%})" for level in plan.levels])
+        logging.info(f"  {base}: {res_str}")
     logging.info("="*60 + "\n")
 
     # Load decode table and model
@@ -962,112 +1042,98 @@ def main():
     plot_rows = []
 
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-    
+
     for base in cfg.bases:
-        out_dir = Path(cfg.output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Add test suffix if in test mode
+        base_samples_dir = inpaint_dir / base
+        base_samples_dir.mkdir(parents=True, exist_ok=True)
+        base_consensus_dir = consensus_dir / base
+        base_consensus_dir.mkdir(parents=True, exist_ok=True)
+
         suffix = "_test" if cfg.test_mode else ""
-        
+
         logging.info(f"\n{'='*60}")
         logging.info(f"Processing base '{base}'")
         logging.info(f"{'='*60}")
-        
-        hierarchy = base_hierarchies[base]
-        
-        # Run multiple samples
+
+        plan = base_hierarchies[base]
+        final_res_value = plan.finest_resolution()
+
         samples_list = []
+        last_raw = None
+        last_mask = None
+        last_profile = None
+
         for sample_idx in range(cfg.samples_per_base):
             torch.manual_seed(cfg.seed + sample_idx)
             logging.info(f"\n{base}: Starting sample {sample_idx+1}/{cfg.samples_per_base}")
+
+            final_tokens, raw, mask_raw, profile = multiresolution_inpaint(
+                model, plan, base, cfg.nlcd_img_path, cfg.geojson_dir,
+                decode_table, disallowed_tokens, cfg, device, sample_idx
+            )
             
-            if cfg.multiresolution:
-                # Use multiresolution inpainting
-                final_tokens, raw, mask_raw, profile = multiresolution_inpaint(
-                    model, hierarchy, base, cfg.nlcd_img_path, cfg.geojson_dir,
-                    decode_table, disallowed_tokens, cfg, device, sample_idx
-                )
-            else:
-                # Use single resolution (old approach)
-                res_m = base_resolutions[base]
-                raw, mask_raw, profile = read_from_nlcd_by_geom(base, Path(cfg.nlcd_img_path), res_m, Path(cfg.geojson_dir))
-                tokens_grid = tokenize_image(raw, decode_table)
-                mask_tokens = coarsen_mask(mask_raw, D)
-                
-                # Simple single-resolution inpainting (simplified for brevity)
-                final_tokens = tokens_grid.copy()
-                # ... (would include the old sliding window logic here if needed)
-            
-            # Detokenize final result
             detok = detokenize(final_tokens, decode_table).astype(raw.dtype)
-            
-            # Ensure shape matches original
+
             Hc, Wc = detok.shape
             Hr, Wr = raw.shape
             if (Hc, Wc) != (Hr, Wr):
                 detok_full = np.zeros_like(raw)
                 detok_full[:Hc, :Wc] = detok
                 detok = detok_full
-            
-            # Determine resolution for filename
-            final_res = hierarchy[-1][0] if cfg.multiresolution else base_resolutions[base]
-            
-            # Save sample
-            sample_path = out_dir / f"{base}_inpainted_{final_res}m_sample{sample_idx+1}{suffix}.tif"
+
+            sample_path = base_samples_dir / f"{base}_inpainted_{final_res_value}m_sample{sample_idx+1}{suffix}.tif"
             write_geotiff(sample_path, detok, profile)
             logging.info(f"{base}: wrote inpainted sample {sample_idx+1} to {sample_path}")
-            
-            samples_list.append(detok)
-            
-            # Collect for plotting
-            plot_rows.append((f"{base} (s{sample_idx+1})", final_res, raw, mask_raw, detok))
 
-        # Determine final resolution
-        final_res = hierarchy[-1][0] if cfg.multiresolution else base_resolutions[base]
-        
-        # Save all samples for this base as a pickle
-        with open(out_dir / f"{base}_samples_{final_res}m{suffix}.pkl", 'wb') as f:
-            pickle.dump({
-                'base': base,
-                'resolution_m': final_res,
-                'raw': raw,
-                'mask': mask_raw,
-                'samples': samples_list,
-                'profile': profile,
-            }, f)
+            samples_list.append(detok)
+            plot_rows.append((f"{base} (s{sample_idx+1})", final_res_value, raw, mask_raw, detok))
+
+            last_raw, last_mask, last_profile = raw, mask_raw, profile
+
+        if last_raw is None:
+            logging.warning(f"{base}: No samples generated; skipping outputs")
+            continue
+
+        sample_data = SampledData(
+            base=base,
+            resolution_m=final_res_value,
+            raw=last_raw,
+            mask=last_mask,
+            samples=samples_list,
+            profile=last_profile,
+        )
+        with open((pickle_dir / f"{base}_samples_{final_res_value}m{suffix}.pkl"), 'wb') as f:
+            pickle.dump(sample_data.model_dump(), f)
         logging.info(f"{base}: saved {len(samples_list)} samples to pickle")
-        
-        # Aggregate samples to find most common pixel value at each location
+
         if len(samples_list) > 0:
-            # Stack all samples into a 3D array (samples, height, width)
             samples_stack = np.stack(samples_list, axis=0)
-            
-            # For each pixel location, find the most common value across samples
-            # Using scipy.stats.mode for efficiency
             from scipy.stats import mode as sp_mode
             consensus, _ = sp_mode(samples_stack, axis=0, keepdims=False)
-            consensus = consensus.astype(raw.dtype)
-            
-            # Save consensus raster to rasters_dir
-            rasters_dir = Path(cfg.rasters_dir)
-            rasters_dir.mkdir(parents=True, exist_ok=True)
-            consensus_path = rasters_dir / f"{base}_consensus_{final_res}m{suffix}.tif"
-            write_geotiff(consensus_path, consensus, profile)
+            consensus = consensus.astype(last_raw.dtype)
+
+            consensus_path = base_consensus_dir / f"{base}_consensus_{final_res_value}m{suffix}.tif"
+            consensus_transform = plan.transforms.get(final_res_value)
+            if consensus_transform is None:
+                logging.warning(
+                    f"{base}: Missing stored transform for {final_res_value}m; falling back to profile transform"
+                )
+            write_geotiff(consensus_path, consensus, last_profile, override_transform=consensus_transform)
             logging.info(f"{base}: wrote consensus raster (mode of {len(samples_list)} samples) to {consensus_path}")
-             
-            # Log class proportions of consensus
+
             logging.info(f"{base}: consensus class proportions: {class_proportions(consensus)}")
-            
-            # Upsample consensus raster to 100m resolution using gdalwarp
-            upsampled_path = rasters_dir / f"{base}_consensus_100m{suffix}.tif"
-            gdal_cmd = f"gdalwarp -tr 100 100 -r near -co COMPRESS=DEFLATE {consensus_path} {upsampled_path}"
-            
+
+            upsampled_path = base_consensus_dir / f"{base}_consensus_100m{suffix}.tif"
+            gdal_cmd = (
+                f"gdalwarp -overwrite -s_srs EPSG:3857 -t_srs EPSG:3857 "
+                f"-tr 100 100 -r near -co COMPRESS=DEFLATE {consensus_path} {upsampled_path}"
+            )
+
             import subprocess
             result = subprocess.run(gdal_cmd, shell=True, capture_output=True, text=True)
-            
+
             if result.returncode == 0:
-                logging.info(f"{base}: upsampled consensus raster from {final_res}m to 100m resolution -> {upsampled_path}")
+                logging.info(f"{base}: upsampled consensus raster from {final_res_value}m to 100m resolution -> {upsampled_path}")
             else:
                 logging.error(f"{base}: Failed to upsample raster. Error: {result.stderr}")
 
@@ -1115,9 +1181,13 @@ def main():
                 axes[i, 2 + j].axis('off')
         plt.tight_layout()
         suffix = "_test" if cfg.test_mode else ""
-        fig_path = Path(cfg.output_dir) / f"overview_mixed_res{suffix}.png"
+        fig_path = figures_dir / f"overview_mixed_res{suffix}.png"
         plt.savefig(fig_path, dpi=200)
         logging.info(f"Saved overview plot to {fig_path}")
+
+    archive_base = case_root / run_dir.name
+    archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=str(run_dir))
+    logging.info(f"Archived case study outputs to {archive_path}")
 
 
 if __name__ == "__main__":
