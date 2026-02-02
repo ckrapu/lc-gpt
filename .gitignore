@@ -54,6 +54,8 @@ logs/
 !logs/.gitkeep
 design/
 paper/
+.research
+.startup
 
 # Ignore all wandb files and directories
 wandb/

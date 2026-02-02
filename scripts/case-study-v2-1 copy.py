@@ -74,7 +74,7 @@ class Config:
     max_mask_ratio_coarse: float = 0.35  # Max mask coverage for coarsest resolution
     max_mask_ratio_fine: float = 0.70  # Max mask coverage for finer resolutions
     min_filled_ratio: float = 0.65  # Min ratio of filled pixels for window selection
-    finest_resolution: int = 240  # Finest resolution to use (in meters)
+    finest_resolution: int = 120  # Finest resolution to use (in meters)
     
     # Test mode
     test_mode: bool = False  # If True, use random tokens instead of model inference
