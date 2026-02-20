@@ -36,7 +36,7 @@ class Config:
     data_npz: str = "data/data_128_final.npz"  # for decode_table
     geojson_dir: str = "data/inpaint_regions"
     nlcd_img_path: str = "data/nlcd_2021_land_cover_l48_20230630.img"  # open .img (has .ige sidecar)
-    output_dir: str = "results/case_study_v2"
+    output_dir: str = "../results/case_study_v2"
     rasters_dir: str = output_dir + "/output_rasters"
 
     # Cases - list of bases to process (resolution will be calculated dynamically)

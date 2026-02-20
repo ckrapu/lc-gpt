@@ -1,0 +1,14 @@
+{
+  "out_gpkg": "data/base_footprints_common.gpkg",
+  "layer": "base_footprints",
+  "count_total": 167,
+  "count_rec_study": 166,
+  "count_legacy": 6,
+  "count_rec_only": 161,
+  "count_legacy_only": 1,
+  "count_both": 5,
+  "missing_from_shapefile_count": 0,
+  "missing_from_shapefile_names": [],
+  "ids_txt": "data/base_footprints_common_ids.txt",
+  "ids_json": "data/base_footprints_common_ids.json"
+}

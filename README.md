@@ -157,3 +157,9 @@ aws s3 sync ./data s3://lc-inpaint/data --exclude "*" --include "*.npz"
 - You may need certain NCCL environment variables to be adjusted for this to work. Use the script `train-multi.sh` to set these automatically.
 
 `scripts/summarize_case_study_v2.py` computes NLCD class proportions within base masks for each case-study-v2 simulation and writes `results/case_study_v2_lc_proportions.xlsx`.
+
+
+### Using the model for infill simulation
+```
+python scripts/case-study-v2-1.py
+```

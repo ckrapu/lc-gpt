@@ -67,3 +67,17 @@ data/split_16.gpkg
 *papermill.ipynb
 *hierarchical-case-study.ipynb
 *hierarchical-case-study-v2.ipynb
+data/__MACOSX/Base_boundary_shp/._US_military_boundary.cpg
+data/__MACOSX/Base_boundary_shp/._US_military_boundary.dbf
+data/__MACOSX/Base_boundary_shp/._US_military_boundary.prj
+data/__MACOSX/Base_boundary_shp/._US_military_boundary.sbn
+data/__MACOSX/Base_boundary_shp/._US_military_boundary.sbx
+data/__MACOSX/Base_boundary_shp/._US_military_boundary.shp
+data/__MACOSX/Base_boundary_shp/._US_military_boundary.shx
+data/Base_boundary_shp/US_military_boundary.cpg
+data/Base_boundary_shp/US_military_boundary.dbf
+data/Base_boundary_shp/US_military_boundary.prj
+data/Base_boundary_shp/US_military_boundary.sbn
+data/Base_boundary_shp/US_military_boundary.sbx
+data/Base_boundary_shp/US_military_boundary.shp
+data/Base_boundary_shp/US_military_boundary.shx

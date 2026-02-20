@@ -1,0 +1,10 @@
+{
+  "requested_count": 166,
+  "matched_count": 166,
+  "missing_count": 0,
+  "too_large_count": 3,
+  "selected_count": 163,
+  "audit_csv": "results/rec_study_boundary_audit/matched_bases_audit.csv",
+  "missing_csv": "results/rec_study_boundary_audit/missing_from_shapefile.csv",
+  "selected_json": "results/rec_study_boundary_audit/selected_base_ids.json"
+}
