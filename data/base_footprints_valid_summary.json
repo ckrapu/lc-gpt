@@ -1,0 +1,6 @@
+{
+  "input_total": 166,
+  "valid_total": 160,
+  "excluded_outside_nlcd": 6,
+  "out_csv": "data/base_footprints_valid.csv"
+}

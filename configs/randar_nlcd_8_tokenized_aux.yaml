@@ -70,7 +70,7 @@ keep_last_k: 2
 resume_from: null  # Start fresh with auxiliary embeddings
 global_seed: 42
 
-results_dir: "results/" 
+results_dir: "results/models/" 
 gpt_ckpt: None
 
 # for eval fid:

@@ -8,7 +8,7 @@ settings.json
 *.ckpt
 *.h5
 *.png
-!samples.png 
+!banner.png 
 !banner.png
 *.ige
 *.csv
@@ -55,7 +55,6 @@ logs/
 design/
 paper/
 .research
-.startup
 
 # Ignore all wandb files and directories
 wandb/
@@ -81,3 +80,5 @@ data/Base_boundary_shp/US_military_boundary.sbn
 data/Base_boundary_shp/US_military_boundary.sbx
 data/Base_boundary_shp/US_military_boundary.shp
 data/Base_boundary_shp/US_military_boundary.shx
+
+.metaflow

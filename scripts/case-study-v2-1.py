@@ -15,8 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import logging
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
+import csv
 import numpy as np
 import torch
 import rasterio
@@ -42,14 +43,20 @@ import pickle
 class Config:
     # IO
     config_yaml: str = "configs/randar_nlcd_128_large.yaml"
-    ckpt_dir: str = "results/randar_nlcd_128_large/checkpoints/iter_180000"
+    ckpt_dir: str = "results/models/randar_nlcd_128_large/checkpoints/iter_180000"
     data_npz: str = "data/data_128_final.npz"  # for decode_table
-    geojson_dir: str = "data/inpaint_regions"
+    geojson_dir: str = "data/inpaint_regions"  # legacy fallback only
+    base_footprints_gpkg: str = "data/base_footprints_common.gpkg"
+    base_footprints_layer: str = "base_footprints"
+    valid_bases_csv: str = "data/base_footprints_valid.csv"
+    valid_bases_id_col: str = "base_id"
     nlcd_img_path: str = "data/nlcd_2021_land_cover_l48_20230630.img"  # open .img (has .ige sidecar)
     case_study_root: str = "results/case_study"
+    max_bases: int = 0  # 0 means "all bases"
+    package_name: str = "case-study-02-2026"
 
 
-    # Cases - list of bases to process (resolution will be calculated dynamically)
+    # Fallback bases if valid_bases_csv is unavailable
     bases: list = field(default_factory=lambda: [
         "ft_belvoir",
         "ft_custer_training_center",
@@ -68,7 +75,8 @@ class Config:
     top_p: float = 1.0
     cfg_scales: tuple[float, float] = (1.0, 1.0)
     seed: int = 42
-    forbidden_nlcd: tuple[int, ...] = (11, 12, 90, 95)  # water/wetlands
+    protected_nlcd: tuple[int, ...] = (11, 12, 90, 95)  # classes that should never be masked/overwritten
+    disallow_protected_generation: bool = False  # optional: also forbid generating these classes anywhere
     
     # Multiresolution parameters
     max_mask_ratio_coarse: float = 0.35  # Max mask coverage for coarsest resolution
@@ -117,6 +125,50 @@ def setup_logger():
         datefmt='%H:%M:%S')
 
 
+def load_base_footprints(gpkg_path: Path, layer: str) -> dict[str, object]:
+    try:
+        gdf = gpd.read_file(gpkg_path, layer=layer, engine="pyogrio")
+    except Exception:
+        gdf = gpd.read_file(gpkg_path, layer=layer)
+
+    if "base_id" not in gdf.columns:
+        raise ValueError(f"GPKG layer '{layer}' missing required column 'base_id'")
+
+    gdf = gdf[["base_id", "geometry"]].dropna(subset=["geometry"]).copy()
+    if gdf.crs is None:
+        raise ValueError(f"GPKG layer '{layer}' has no CRS")
+    gdf = gdf.to_crs("EPSG:4326")
+
+    geometries: dict[str, object] = {}
+    for _, row in gdf.iterrows():
+        base_id = str(row["base_id"]).strip()
+        if not base_id:
+            continue
+        geom = row["geometry"]
+        if geom is None or geom.is_empty:
+            continue
+        if base_id in geometries:
+            geometries[base_id] = geometries[base_id].union(geom)
+        else:
+            geometries[base_id] = geom
+    return geometries
+
+
+def load_base_ids_from_csv(csv_path: Path, id_col: str) -> list[str]:
+    if not csv_path.exists():
+        return []
+    with csv_path.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        ids = []
+        for row in reader:
+            raw = row.get(id_col, "")
+            base_id = str(raw).strip()
+            if base_id:
+                ids.append(base_id)
+    # preserve order, dedupe
+    return list(dict.fromkeys(ids))
+
+
 def load_decode_table(npz_path: Path) -> np.ndarray:
     data = np.load(npz_path)
     decode_table = data['decode_table']  # (T, D, D)
@@ -125,12 +177,12 @@ def load_decode_table(npz_path: Path) -> np.ndarray:
 
 
 def compute_disallowed_token_indices(decode_table: np.ndarray,
-                                     forbidden_nlcd: tuple[int, ...]) -> np.ndarray:
+                                     class_ids: tuple[int, ...]) -> np.ndarray:
 
     flat = decode_table.reshape(decode_table.shape[0], -1)
-    mask = np.isin(flat, np.array(forbidden_nlcd, dtype=flat.dtype)).any(axis=1)
+    mask = np.isin(flat, np.array(class_ids, dtype=flat.dtype)).any(axis=1)
     idx = np.where(mask)[0].astype(np.int64)
-    logging.info(f"Identified {len(idx)} tokens that include NLCD classes {forbidden_nlcd}")
+    logging.info(f"Identified {len(idx)} tokens that include NLCD classes {class_ids}")
     return idx
 
 
@@ -300,7 +352,7 @@ def calculate_optimal_resolution(base_name: str, nlcd_img: Path, geojson_dir: Pa
     return resolutions[-1], mask_ratio  # Last calculated mask_ratio
 
 
-def select_resolution_hierarchy(base_name: str, nlcd_img: Path, geojson_dir: Path, 
+def select_resolution_hierarchy(base_name: str, geom_wgs84, nlcd_img: Path,
                                max_mask_ratio_coarse: float = 0.35,
                                max_mask_ratio_fine: float = 0.70,
                                finest_resolution: int = 30) -> ResolutionHierarchy:
@@ -310,16 +362,11 @@ def select_resolution_hierarchy(base_name: str, nlcd_img: Path, geojson_dir: Pat
     """
     resolutions = [960, 480, 240, 120, 60, 30]
     hierarchy = []
-    
-    geojson_path = geojson_dir / f"base_{base_name}.geojson"
-    if not geojson_path.exists():
-        raise FileNotFoundError(f"GeoJSON file not found: {geojson_path}")
-    
-    gdf = gpd.read_file(geojson_path).to_crs("EPSG:4326")
+    if geom_wgs84 is None or geom_wgs84.is_empty:
+        raise ValueError(f"Geometry is empty for base '{base_name}'")
     
     with rasterio.open(nlcd_img) as nlcd:
-        gdf_nlcd = gdf.to_crs(nlcd.crs)
-        geom_nlcd = gdf_nlcd.geometry.union_all()
+        geom_nlcd = gpd.GeoSeries([geom_wgs84], crs="EPSG:4326").to_crs(nlcd.crs).iloc[0]
         bounds = geom_nlcd.bounds
         
         # Find coarsest resolution with acceptable mask coverage
@@ -557,21 +604,14 @@ def generate_random_inpainting(known_tokens, known_positions, unknown_positions,
     return torch.tensor(full_tokens).unsqueeze(0)
 
 
-def read_from_nlcd_by_geom(base_name: str, nlcd_img: Path, resolution_m: int, geojson_dir: Path) -> tuple[np.ndarray, np.ndarray, dict]:
-    geojson_path = geojson_dir / f"base_{base_name}.geojson"
-    if not geojson_path.exists():
-        raise FileNotFoundError(f"GeoJSON file not found: {geojson_path}")
-    
-    gdf = gpd.read_file(geojson_path).to_crs("EPSG:4326")
-    if gdf is None or len(gdf) == 0:
-        raise FileNotFoundError(f"Could not load geometry for base '{base_name}' from {geojson_path}")
-    
-    # geom_wgs84 = gdf.geometry.union_all()  # For future use if needed
+def read_from_nlcd_by_geom(base_name: str, geom_wgs84, nlcd_img: Path, resolution_m: int,
+                           protected_nlcd: tuple[int, ...] = ()) -> tuple[np.ndarray, np.ndarray, dict]:
+    if geom_wgs84 is None or geom_wgs84.is_empty:
+        raise ValueError(f"Geometry is empty for base '{base_name}'")
 
     with rasterio.open(nlcd_img) as nlcd:
         # Transform geom to NLCD CRS
-        gdf_nlcd = gdf.to_crs(nlcd.crs)
-        geom_nlcd = gdf_nlcd.geometry.union_all()
+        geom_nlcd = gpd.GeoSeries([geom_wgs84], crs="EPSG:4326").to_crs(nlcd.crs).iloc[0]
         bounds = geom_nlcd.bounds  # minx, miny, maxx, maxy
         
         # Read a much larger area (10x the bounds) to ensure we get enough data
@@ -675,6 +715,17 @@ def read_from_nlcd_by_geom(base_name: str, nlcd_img: Path, resolution_m: int, ge
 
         # Downsample mask by any
         mask_coarse = coarsen_mask_by_ratio(mask_30m, ratio)
+
+        # Never infill protected classes (e.g., water/wetlands).
+        if protected_nlcd:
+            protected_mask = np.isin(coarse, np.array(protected_nlcd, dtype=coarse.dtype))
+            protected_in_mask = int((mask_coarse & protected_mask).sum())
+            if protected_in_mask > 0:
+                logging.info(
+                    f"{base_name}: removing {protected_in_mask} protected pixels from mask at {resolution_m}m"
+                )
+            mask_coarse = mask_coarse & (~protected_mask)
+
         coarse_coverage = mask_coarse.sum()
         logging.info(
             f"{base_name}: coarse mask coverage {coarse_coverage}/{mask_coarse.size} tokens (ratio={coarse_coverage/mask_coarse.size:.2%})"
@@ -780,7 +831,116 @@ def class_proportions(arr: np.ndarray) -> dict:
     return {int(v): float(c) / float(total) for v, c in zip(vals, counts)}
 
 
-def multiresolution_inpaint(model, plan: ResolutionHierarchy, base_name, nlcd_img_path, geojson_dir,
+def class_proportions_in_mask(arr: np.ndarray, mask: np.ndarray) -> dict:
+    masked = arr[mask]
+    if masked.size == 0:
+        return {}
+    vals, counts = np.unique(masked, return_counts=True)
+    total = counts.sum()
+    return {int(v): float(c) / float(total) for v, c in zip(vals, counts)}
+
+
+def format_duration(total_seconds: float) -> str:
+    total_seconds = max(int(total_seconds), 0)
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def to_rgb(arr: np.ndarray) -> np.ndarray:
+    lut = NLCDTokenizer.lut
+    keys = np.array(sorted(lut.keys()), dtype=np.int64)
+    rgb_vals = np.array([lut[k] for k in keys], dtype=np.float32)
+    out = np.zeros((arr.shape[0], arr.shape[1], 3), dtype=np.float32)
+    for k, rgb in zip(keys, rgb_vals):
+        m = (arr == k)
+        if m.any():
+            out[m] = rgb
+    return out
+
+
+def save_sample_figure(
+    base: str,
+    sample_idx: int,
+    resolution_m: int,
+    raw: np.ndarray,
+    mask: np.ndarray,
+    sample: np.ndarray,
+    out_path: Path,
+):
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), squeeze=False)
+    axes = axes[0]
+    axes[0].imshow(to_rgb(raw), interpolation='nearest')
+    axes[0].set_title(f"{base} original ({resolution_m}m)")
+    axes[0].axis('off')
+    axes[1].imshow(mask.astype(np.uint8), cmap='gray', interpolation='nearest')
+    axes[1].set_title("infill mask")
+    axes[1].axis('off')
+    axes[2].imshow(to_rgb(sample), interpolation='nearest')
+    axes[2].set_title(f"sample {sample_idx}")
+    axes[2].axis('off')
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
+
+def append_infill_proportion_rows(
+    rows: list[dict],
+    base: str,
+    base_id: str,
+    mask: np.ndarray,
+    reference: np.ndarray,
+    samples: list[np.ndarray],
+):
+    reference_props = class_proportions_in_mask(reference, mask)
+    sample_props = [class_proportions_in_mask(s, mask) for s in samples]
+    classes = sorted(set(reference_props.keys()).union(*[set(p.keys()) for p in sample_props]))
+    infill_pixels = int(mask.sum())
+
+    for cls in classes:
+        rows.append(
+            {
+                "base_name": base,
+                "base_id": base_id,
+                "sample_number": -1,
+                "sample_label": "reference",
+                "class_id": cls,
+                "proportion": reference_props.get(cls, 0.0),
+                "infill_pixels": infill_pixels,
+            }
+        )
+        for sample_idx, props in enumerate(sample_props):
+            rows.append(
+                {
+                    "base_name": base,
+                    "base_id": base_id,
+                    "sample_number": sample_idx,
+                    "sample_label": f"sample{sample_idx}",
+                    "class_id": cls,
+                    "proportion": props.get(cls, 0.0),
+                    "infill_pixels": infill_pixels,
+                }
+            )
+
+
+def write_infill_proportions_csv(path: Path, rows: list[dict]):
+    fieldnames = [
+        "base_name",
+        "base_id",
+        "sample_number",
+        "sample_label",
+        "class_id",
+        "proportion",
+        "infill_pixels",
+    ]
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def multiresolution_inpaint(model, plan: ResolutionHierarchy, base_name, geom_wgs84, nlcd_img_path,
                            decode_table, disallowed_tokens, cfg, device, sample_idx=0):
     """
     Perform multiresolution inpainting from coarse to fine.
@@ -796,7 +956,13 @@ def multiresolution_inpaint(model, plan: ResolutionHierarchy, base_name, nlcd_im
         logging.info(f"{base_name} Sample {sample_idx+1}: Level {level_idx+1}/{total_levels} - Resolution {res_m}m (mask: {mask_ratio:.2%})")
         
         # Load data at current resolution
-        raw, mask_raw, profile = read_from_nlcd_by_geom(base_name, Path(nlcd_img_path), res_m, Path(geojson_dir))
+        raw, mask_raw, profile = read_from_nlcd_by_geom(
+            base_name,
+            geom_wgs84,
+            Path(nlcd_img_path),
+            res_m,
+            cfg.protected_nlcd,
+        )
 
         transform = profile.get('transform')
         if transform is not None and not isinstance(transform, Affine):
@@ -806,7 +972,17 @@ def multiresolution_inpaint(model, plan: ResolutionHierarchy, base_name, nlcd_im
         
         # Tokenize
         tokens_grid = tokenize_image(raw, decode_table)
-        mask_tokens = coarsen_mask(mask_raw, decode_table.shape[1])
+        D = decode_table.shape[1]
+        mask_tokens = coarsen_mask(mask_raw, D)
+        if cfg.protected_nlcd:
+            protected_raw = np.isin(raw, np.array(cfg.protected_nlcd, dtype=raw.dtype))
+            protected_tokens = coarsen_mask(protected_raw, D)
+            protected_token_overlap = int((mask_tokens & protected_tokens).sum())
+            if protected_token_overlap > 0:
+                logging.info(
+                    f"{base_name}: removing {protected_token_overlap} protected tokens from infill mask at {res_m}m"
+                )
+            mask_tokens = mask_tokens & (~protected_tokens)
         
         Ht, Wt = tokens_grid.shape
         wt = cfg.window_tokens
@@ -1019,15 +1195,9 @@ def multiresolution_inpaint(model, plan: ResolutionHierarchy, base_name, nlcd_im
                             f"{base_name}: edge known-token changes in window ({y},{x}) at {res_m}m -> {edge_changes}"
                         )
 
-                    # Blend overlapping regions if using overlap
-                    if stride < wt:
-                        # Simple averaging for overlapping regions
-                        for dy in range(wt):
-                            for dx in range(wt):
-                                if window_mask[dy, dx]:
-                                    result_tokens[y + dy, x + dx] = gen_window[dy, dx]
-                    else:
-                        result_tokens[y:y + wt, x:x + wt] = gen_window
+                    # Write back generated values only where window is masked.
+                    target_window = result_tokens[y:y + wt, x:x + wt]
+                    target_window[window_mask] = gen_window[window_mask]
 
             if windows_processed > 0 or level_idx == 0:
                 break
@@ -1076,9 +1246,9 @@ def multiresolution_inpaint(model, plan: ResolutionHierarchy, base_name, nlcd_im
     return previous_result, raw, mask_raw, profile
 
 
-def main():
+def main(cfg: Optional[Config] = None):
     setup_logger()
-    cfg = Config()
+    cfg = cfg or Config()
     torch.manual_seed(cfg.seed)
 
     run_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1088,30 +1258,45 @@ def main():
     consensus_dir = run_dir / "consensus"
     pickle_dir = run_dir / "pickles"
     figures_dir = run_dir / "figures"
+    images_dir = run_dir / "images"
+    base_images_dir = images_dir / "bases"
+    proportions_csv_path = run_dir / "infill_class_proportions_long.csv"
 
-    for folder in (inpaint_dir, consensus_dir, pickle_dir, figures_dir):
+    for folder in (inpaint_dir, consensus_dir, pickle_dir, figures_dir, base_images_dir):
         folder.mkdir(parents=True, exist_ok=True)
 
     logging.info(f"Using device: {cfg.device} with checkpoint {cfg.ckpt_dir}. Writing outputs to {run_dir}")
 
-    logging.info("Checking availability of all base geometries...")
-    missing_bases = []
+    base_geometries = load_base_footprints(Path(cfg.base_footprints_gpkg), cfg.base_footprints_layer)
+    logging.info(
+        f"Loaded {len(base_geometries)} base geometries from {cfg.base_footprints_gpkg}:{cfg.base_footprints_layer}"
+    )
 
-    for base in cfg.bases:
-        geojson_path = Path(cfg.geojson_dir) / f"base_{base}.geojson"
+    base_ids = load_base_ids_from_csv(Path(cfg.valid_bases_csv), cfg.valid_bases_id_col)
+    if base_ids:
+        logging.info(f"Loaded {len(base_ids)} base IDs from {cfg.valid_bases_csv}")
+    else:
+        base_ids = list(cfg.bases)
+        logging.warning(
+            f"No base IDs loaded from {cfg.valid_bases_csv}; falling back to Config.bases ({len(base_ids)})"
+        )
 
-        if not geojson_path.exists():
-            missing_bases.append(base)
-            logging.error(f"Base '{base}' GeoJSON not found at {geojson_path}")
-        else:
-            logging.info(f"Base '{base}' GeoJSON file exists")
+    missing_geometries = [b for b in base_ids if b not in base_geometries]
+    if missing_geometries:
+        logging.warning(
+            f"{len(missing_geometries)} bases requested but missing from GPKG geometries; they will be skipped"
+        )
+        for b in missing_geometries:
+            logging.warning(f"Missing geometry for base '{b}'")
 
-    if missing_bases:
-        logging.error(f"Missing base geometries: {missing_bases}")
-        logging.error("Cannot proceed without all base geometries. Please check your data.")
+    selected_bases = [b for b in base_ids if b in base_geometries]
+    if cfg.max_bases > 0:
+        selected_bases = selected_bases[:cfg.max_bases]
+    logging.info(f"Selected {len(selected_bases)} bases for this run (max_bases={cfg.max_bases})")
+
+    if not selected_bases:
+        logging.error("No bases selected after applying geometry and max_bases filters")
         sys.exit(1)
-
-    logging.info(f"Feature geometries for all {len(cfg.bases)} features are available.")
 
     logging.info("\n" + "="*60)
     logging.info("Calculating multiresolution hierarchies for all regions...")
@@ -1119,13 +1304,13 @@ def main():
     logging.info("="*60)
 
     base_hierarchies = {base: select_resolution_hierarchy(
-            base, Path(cfg.nlcd_img_path), Path(cfg.geojson_dir),
+            base, base_geometries[base], Path(cfg.nlcd_img_path),
             cfg.max_mask_ratio_coarse, cfg.max_mask_ratio_fine, cfg.finest_resolution)
-        for base in cfg.bases}
+        for base in selected_bases}
 
 
     logging.info("Resolution selection complete. Summary:")
-    for base in cfg.bases:
+    for base in selected_bases:
         plan = base_hierarchies[base]
         res_str = " -> ".join([f"{level.resolution_m}m ({level.mask_ratio:.1%})" for level in plan.levels])
         logging.info(f"  {base}: {res_str}")
@@ -1143,18 +1328,33 @@ def main():
         model = load_model(cfg)
         model.eval()
 
-    disallowed_tokens = compute_disallowed_token_indices(decode_table, cfg.forbidden_nlcd)
-
-    # For plotting after processing all bases
-    plot_rows = []
+    if cfg.disallow_protected_generation:
+        disallowed_tokens = compute_disallowed_token_indices(decode_table, cfg.protected_nlcd)
+        logging.warning(
+            "Protected NLCD classes are also globally disallowed during generation "
+            "(legacy behavior enabled)."
+        )
+    else:
+        disallowed_tokens = np.empty((0,), dtype=np.int64)
+        logging.info(
+            "Protected NLCD classes will be preserved by mask protection; "
+            "global generation bans are disabled."
+        )
 
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    total_samples = len(selected_bases) * cfg.samples_per_base
+    completed_samples = 0
+    run_start = datetime.now()
+    proportion_rows: list[dict] = []
 
-    for base in cfg.bases:
+    for base in selected_bases:
+        base_start = datetime.now()
         base_samples_dir = inpaint_dir / base
         base_samples_dir.mkdir(parents=True, exist_ok=True)
         base_consensus_dir = consensus_dir / base
         base_consensus_dir.mkdir(parents=True, exist_ok=True)
+        base_image_out_dir = base_images_dir / base
+        base_image_out_dir.mkdir(parents=True, exist_ok=True)
 
         suffix = "_test" if cfg.test_mode else ""
 
@@ -1171,11 +1371,15 @@ def main():
         last_profile = None
 
         for sample_idx in range(cfg.samples_per_base):
+            sample_start = datetime.now()
             torch.manual_seed(cfg.seed + sample_idx)
-            logging.info(f"\n{base}: Starting sample {sample_idx+1}/{cfg.samples_per_base}")
+            logging.info(
+                f"\n{base}: Starting sample {sample_idx+1}/{cfg.samples_per_base} "
+                f"(global {completed_samples+1}/{total_samples})"
+            )
 
             final_tokens, raw, mask_raw, profile = multiresolution_inpaint(
-                model, plan, base, cfg.nlcd_img_path, cfg.geojson_dir,
+                model, plan, base, base_geometries[base], cfg.nlcd_img_path,
                 decode_table, disallowed_tokens, cfg, device, sample_idx
             )
             
@@ -1188,6 +1392,16 @@ def main():
                 detok_full[:Hc, :Wc] = detok
                 detok = detok_full
 
+            if cfg.protected_nlcd:
+                protected_pixels = np.isin(raw, np.array(cfg.protected_nlcd, dtype=raw.dtype))
+                if np.any(protected_pixels):
+                    protected_overwritten = int(np.count_nonzero(detok[protected_pixels] != raw[protected_pixels]))
+                    if protected_overwritten > 0:
+                        logging.info(
+                            f"{base}: sample {sample_idx+1} restoring {protected_overwritten} protected pixels"
+                        )
+                    detok[protected_pixels] = raw[protected_pixels]
+
             sample_path = base_samples_dir / f"{base}_inpainted_{final_res_value}m_sample{sample_idx+1}{suffix}.tif"
             logging.info(
                 f"{base}: sample {sample_idx+1} class proportions -> {class_proportions(detok)}"
@@ -1195,10 +1409,39 @@ def main():
             write_geotiff(sample_path, detok, profile)
             logging.info(f"{base}: wrote inpainted sample {sample_idx+1} to {sample_path}")
 
+            sample_figure_path = base_image_out_dir / f"{base}_sample{sample_idx+1:02d}{suffix}.png"
+            save_sample_figure(
+                base=base,
+                sample_idx=sample_idx + 1,
+                resolution_m=final_res_value,
+                raw=raw,
+                mask=mask_raw,
+                sample=detok,
+                out_path=sample_figure_path,
+            )
+            logging.info(f"{base}: wrote sample figure {sample_idx+1} to {sample_figure_path}")
+
             samples_list.append(detok)
-            plot_rows.append((f"{base} (s{sample_idx+1})", final_res_value, raw, mask_raw, detok))
 
             last_raw, last_mask, last_profile = raw, mask_raw, profile
+
+            completed_samples += 1
+            sample_elapsed = (datetime.now() - sample_start).total_seconds()
+            run_elapsed = (datetime.now() - run_start).total_seconds()
+            avg_sample_sec = run_elapsed / max(completed_samples, 1)
+            samples_remaining = total_samples - completed_samples
+            eta_seconds = avg_sample_sec * samples_remaining
+            eta_finish = datetime.now() + timedelta(seconds=eta_seconds)
+            logging.info(
+                f"{base}: sample {sample_idx+1} completed in {format_duration(sample_elapsed)}"
+            )
+            logging.info(
+                "RUN PROGRESS: "
+                f"{completed_samples}/{total_samples} samples ({(100.0 * completed_samples / total_samples):.1f}%), "
+                f"elapsed={format_duration(run_elapsed)}, "
+                f"eta={format_duration(eta_seconds)}, "
+                f"est_finish={eta_finish.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
 
         if last_raw is None:
             logging.warning(f"{base}: No samples generated; skipping outputs")
@@ -1247,57 +1490,48 @@ def main():
             else:
                 logging.error(f"{base}: Failed to upsample raster. Error: {result.stderr}")
 
-    # Create overview plot
-    if plot_rows:
-        # Group rows by base: we have original/mask + 3 samples = 5 columns
-        # Build mapping base -> list of (label,res,raw,mask,pred) where pred varies
-        grouped = {}
-        for label, res_m, raw_i, mask_i, pred_i in plot_rows:
-            base = label.split(' (s')[0]
-            grouped.setdefault(base, {'res': res_m, 'raw': raw_i, 'mask': mask_i, 'preds': []})
-            grouped[base]['preds'].append(pred_i)
+        append_infill_proportion_rows(
+            rows=proportion_rows,
+            base=base,
+            base_id=base,
+            mask=last_mask,
+            reference=last_raw,
+            samples=samples_list,
+        )
+        write_infill_proportions_csv(proportions_csv_path, proportion_rows)
+        logging.info(f"{base}: wrote/updated infill proportions CSV -> {proportions_csv_path}")
+        base_elapsed = (datetime.now() - base_start).total_seconds()
+        logging.info(
+            f"{base}: completed all {len(samples_list)} samples in {format_duration(base_elapsed)}"
+        )
 
-        bases = list(grouped.keys())
-        n = len(bases)
-        _, axes = plt.subplots(n, 5, figsize=(15, 3 * n), squeeze=False)
-        # Build LUT array for vectorized mapping
-        lut = NLCDTokenizer.lut
-        keys = np.array(sorted(lut.keys()), dtype=np.int64)
-        rgb_vals = np.array([lut[k] for k in keys], dtype=np.float32)
-
-        def to_rgb(a: np.ndarray) -> np.ndarray:
-            out = np.zeros((a.shape[0], a.shape[1], 3), dtype=np.float32)
-            for k, rgb in zip(keys, rgb_vals):
-                m = (a == k)
-                if m.any():
-                    out[m] = rgb
-            return out
-
-        for i, base in enumerate(bases):
-            res_m = grouped[base]['res']
-            raw_i = grouped[base]['raw']
-            mask_i = grouped[base]['mask']
-            preds = grouped[base]['preds']
-            axes[i, 0].imshow(to_rgb(raw_i), interpolation='nearest')
-            axes[i, 0].set_title(f"{base} original ({res_m}m)")
-            axes[i, 0].axis('off')
-            axes[i, 1].imshow(mask_i.astype(np.uint8), cmap='gray', interpolation='nearest')
-            axes[i, 1].set_title("mask")
-            axes[i, 1].axis('off')
-            for j in range(3):
-                img = preds[j] if j < len(preds) else preds[-1]
-                axes[i, 2 + j].imshow(to_rgb(img), interpolation='nearest')
-                axes[i, 2 + j].set_title(f"sample {j+1}")
-                axes[i, 2 + j].axis('off')
-        plt.tight_layout()
-        suffix = "_test" if cfg.test_mode else ""
-        fig_path = figures_dir / f"overview_mixed_res{suffix}.png"
-        plt.savefig(fig_path, dpi=200)
-        logging.info(f"Saved overview plot to {fig_path}")
+    readme_path = run_dir / "README.md"
+    readme_lines = [
+        f"# Case Study Outputs ({run_dir.name})",
+        "",
+        f"Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "Contents:",
+        "- inpainted/: per-base sampled inpainted rasters",
+        "- consensus/: per-base consensus rasters (native resolution + 100m)",
+        "- pickles/: per-base serialized sample bundles",
+        "- images/bases/: per-base, per-sample progress figures",
+        "- infill_class_proportions_long.csv: long-format class proportions in infill region for reference and each sample",
+        "- figures/: retained for compatibility with previous outputs",
+    ]
+    readme_path.write_text("\n".join(readme_lines) + "\n")
+    logging.info(f"Wrote README to {readme_path}")
 
     archive_base = case_root / run_dir.name
     archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=str(run_dir))
     logging.info(f"Archived case study outputs to {archive_path}")
+
+    package_base = case_root / cfg.package_name
+    package_zip_path = package_base.with_suffix(".zip")
+    if package_zip_path.exists():
+        package_zip_path.unlink()
+    package_archive_path = shutil.make_archive(str(package_base), "zip", root_dir=str(run_dir))
+    logging.info(f"Packaged case study outputs to {package_archive_path}")
 
 
 if __name__ == "__main__":

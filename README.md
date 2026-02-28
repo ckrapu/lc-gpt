@@ -53,9 +53,9 @@ Notes:
 ## Generating a new image
 The code below uses a script to produce an animation of a new NLCD image being created one pixel at a time in random order.
 ```
-python3 scripts/nlcd_animation.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final --output-file generation_2x2.gif --device cuda --nrows 2 --ncols 2 --size 32
+python3 scripts/nlcd_animation.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final --output-file generation_2x2.gif --device cuda --nrows 2 --ncols 2 --size 32
 ```
-![samples](samples.png)
+![samples](banner.png)
 
 
 ## Scripts
@@ -65,13 +65,13 @@ The `scripts/` directory contains utilities for training, evaluation, and visual
 | Script Name | Output | Example Command |
 |------------|---------|-----------------|
 | `eval-compare-information.py` | Compares information content between language and land cover data using entropy metrics | `python scripts/eval-compare-information.py --text-path data/tiny_shakespeare.txt --config configs/randar_nlcd_32.yaml` |
-| `eval-inpaint-single.py` | JSON file for single masking level with inpainting accuracy metrics and optional visualization plots | `python scripts/eval-inpaint-single.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final --n-images 100` |
-| `eval-perplexity.py` | Perplexity evaluation results for the model on NLCD data | `python scripts/eval-perplexity.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final --n 1000` |
+| `eval-inpaint-single.py` | JSON file for single masking level with inpainting accuracy metrics and optional visualization plots | `python scripts/eval-inpaint-single.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final --n-images 100` |
+| `eval-perplexity.py` | Perplexity evaluation results for the model on NLCD data | `python scripts/eval-perplexity.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final --n 1000` |
 | `eval-zip-info-content.py` | Compression ratio comparison between NLCD and Wiki data | `python scripts/eval-zip-info-content.py` |
 | `plot-inpaint-evals.py` | Plot of inpainting accuracy vs mask ratio | `python scripts/plot-inpaint-evals.py` |
-| `viz-embed-space.py` | Plot visualization of model embedding space using UMAP | `python scripts/viz-embed-space.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final --n-embeddings 100` |
+| `viz-embed-space.py` | Plot visualization of model embedding space using UMAP | `python scripts/viz-embed-space.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final --n-embeddings 100` |
 | `viz-prob-dev-plot.py` | Plo heatmap showing probability of development from multiple samples | `python scripts/viz-prob-dev-plot.py` |
-| `viz-sample-chain.py` | GIF animation of Gibbs sampling chain | `python scripts/viz-sample-chain.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final --t 100 --output-file chains.gif` |
+| `viz-sample-chain.py` | GIF animation of Gibbs sampling chain | `python scripts/viz-sample-chain.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final --t 100 --output-file chains.gif` |
 | `inpaint-experiment.sh` | Multiple JSON files with inpainting results for different mask ratios | `bash scripts/inpaint-experiment.sh` |
 | `prep-dataset.ipynb` | Processed NLCD dataset with train/test splits and DEM data | Run in Jupyter |
 | `viz-wide-animation.ipynb` | Wide panoramic animation GIF with pixel reveal effect | Run in Jupyter |
@@ -80,9 +80,9 @@ More details:
 
 The script `scripts/inpaint-eval-single.py` can be used to calculate the average accuracy of the RandAR model as applied to image inpainting with a masked rectangular region in the image interior. It can be run via a command like the following:
 ```
-python scripts/inpaint-eval-single.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final --n-images 2000 --size 32 --verbose --save-results inpaint_eval_results.json
+python scripts/inpaint-eval-single.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final --n-images 2000 --size 32 --verbose --save-results inpaint_eval_results.json
 
-python scripts/inpaint-eval-single.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final --n-images 2 --verbose --save-results inpaint_eval_results.json --mask-type random --mask-ratio 0.9 --visualize
+python scripts/inpaint-eval-single.py --config configs/randar_nlcd_32.yaml --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final --n-images 2 --verbose --save-results inpaint_eval_results.json --mask-type random --mask-ratio 0.9 --visualize
 ```
 
 ### Running Gibbs sampler
@@ -91,7 +91,7 @@ Part of this project assesses the autoregressive model by using it as an energy 
 # Long run with multiple chains, saving data only
 python scripts/sample-chain.py \
   --config configs/randar_nlcd_32.yaml \
-  --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final \
+  --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final \
   --t 20000 \
   --n-chains 5 \
   --save-array long_chains.npz \
@@ -101,7 +101,7 @@ python scripts/sample-chain.py \
 # Short run with animation
 python scripts/sample-chain.py \
   --config configs/randar_nlcd_32.yaml \
-  --gpt-ckpt results_nlcd_32/randar_nlcd_32/checkpoints/final \
+  --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final \
   --t 100 \
   --n-chains 3 \
   --output-file chains.gif \
@@ -112,11 +112,22 @@ python scripts/sample-chain.py \
 ## Operational notes:
 
 #### Startup on fresh install
-These commands set up the local environment and copy any required data files from S3.
+For remote workers, run `train-setup.sh` before either `train-multi.sh` or `train.py`. The setup script loads credentials from `.env`, prepares the virtual environment, and syncs required data from S3.
 
 ```
-curl -LsSf https://astral.sh/uv/install.sh | sh && source $HOME/.local/bin/env && uv venv --clear && source .venv/bin/activate && uv pip install -r requirements.txt
-uv pip install awscli && aws configure && aws s3 sync s3://lc-inpaint/data ./data --exclude "*" --include "*.npz"
+bash train-setup.sh
+```
+
+Then start training with one of:
+
+```
+bash train-multi.sh
+```
+
+or
+
+```
+accelerate launch train.py --config configs/randar_nlcd_128_large.yaml
 ```
 
 #### Syncing data files in `results/` FROM local to S3

@@ -9,6 +9,7 @@ import argparse
 import numpy as np
 from PIL import Image
 import sys
+from pathlib import Path
 sys.path.append("./")
 from omegaconf import OmegaConf
 from accelerate.utils import ProjectConfiguration
@@ -19,7 +20,7 @@ from dotenv import load_dotenv
 import wandb
 
 # Load environment variables from .env file
-load_dotenv(dotenv_path="../.env")
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 from RandAR.utils import instantiate_from_config
 from RandAR.utils.visualization import make_grid

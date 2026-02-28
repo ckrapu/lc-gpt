@@ -62,10 +62,10 @@ ckpt_every: 5000
 visualize_every: 1000
 eval_pplx_every: 5000
 keep_last_k: 2
-resume_from: "results/randar_nlcd_64_multires/checkpoints/iter_18000"
+resume_from: "results/models/randar_nlcd_64_multires/checkpoints/iter_18000"
 global_seed: 42
 
-results_dir: "results/" 
+results_dir: "results/models/" 
 gpt_ckpt: None
 
 # for eval fid:

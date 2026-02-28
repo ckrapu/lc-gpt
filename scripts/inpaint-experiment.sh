@@ -20,7 +20,7 @@ for ratio in "${mask_ratios[@]}"; do
         # Run the evaluation
         python tools/eval-inpaint-single.py \
             --config configs/randar_nlcd_32.yaml \
-            --gpt-ckpt results/randar_nlcd_32/checkpoints/final \
+            --gpt-ckpt results/models/randar_nlcd_32/checkpoints/final \
             --n-images $n_images \
             --verbose \
             --save-results "logs/inpaint_eval_results_interior_${ratio_str}.json" \

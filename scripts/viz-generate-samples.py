@@ -20,7 +20,7 @@ class Config:
     scripts_path: Path = Path(__file__).parent
     top_path: Path = scripts_path.parent
     config_path: Path = top_path / "configs/randar_nlcd_128_large.yaml"
-    checkpoint_path: Path = top_path / "results/randar_nlcd_128_large/checkpoints/iter_180000"
+    checkpoint_path: Path = top_path / "results/models/randar_nlcd_128_large/checkpoints/iter_180000"
     data_path: Path = top_path / "data/data_128_final.npz"
     save_path: Path = top_path / "results/visualizations/unconditional_generation.png"
     temperatures: tuple = (0.8, 0.9, 1.0, 1.1, 1.2)

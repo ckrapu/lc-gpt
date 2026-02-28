@@ -24,7 +24,7 @@ from RandAR.dataset.nlcd_dataset import detokenize
 @dataclass
 class Config:
     config_path: str = "configs/randar_nlcd_128_large.yaml"
-    gpt_ckpt: str = "results/randar_nlcd_128_large/checkpoints/final"
+    gpt_ckpt: str = "results/models/randar_nlcd_128_large/checkpoints/final"
     data_path: str = "data/data_128_final.npz"
     device: str = "cpu"
     n_embeddings: int = 1000
@@ -110,7 +110,7 @@ def get_model_embeddings(model, dataset, device, n_samples=100, seed=42):
 def main():
     parser = argparse.ArgumentParser(description="Visualize embedding space of RandAR model")
     parser.add_argument("--config", type=str, default="configs/randar_nlcd_128_large.yaml")
-    parser.add_argument("--gpt-ckpt", type=str, default="results/randar_nlcd_128_large/checkpoints/final")
+    parser.add_argument("--gpt-ckpt", type=str, default="results/models/randar_nlcd_128_large/checkpoints/final")
     parser.add_argument("--data-path", type=str, default="data/data_128_final.npz")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--n-embeddings", type=int, default=100)
